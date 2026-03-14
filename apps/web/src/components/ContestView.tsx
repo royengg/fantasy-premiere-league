@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { ChevronDown, ChevronUp, Clock, Users, Star, TrendingUp } from "lucide-react";
 import type { BuildRosterInput, Contest, LeaderboardEntry, Match, Player, Roster, Team } from "@fantasy-cricket/types";
+import { CricketField } from "./CricketField";
 
 interface ContestViewProps {
   contests: Contest[];
@@ -17,11 +18,11 @@ export function ContestView({ contests, matches, teams, players, rosters, leader
   if (contests.length === 0) {
     return (
       <div className="text-center py-20">
-        <div className="w-20 h-20 rounded-full bg-white/5 flex items-center justify-center mx-auto mb-4">
+        <div className="w-20 h-20 rounded-full bg-white/5 border border-border flex items-center justify-center mx-auto mb-4">
           <Users className="w-10 h-10 text-text-muted/50" />
         </div>
-        <h2 className="text-xl font-bold mb-2">No Active Contests</h2>
-        <p className="text-text-muted">Check back later for upcoming matches.</p>
+        <h2 className="text-xl font-bold mb-2">No Live Matches</h2>
+        <p className="text-text-muted">Check back later for upcoming fixtures.</p>
       </div>
     );
   }
@@ -66,24 +67,32 @@ interface ContestCardProps {
 
 function ContestCard({ contest, match, homeTeam, awayTeam, players, roster, leaderboard, onSubmit }: ContestCardProps) {
   const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState<"squad" | "leaderboard">("squad");
+  const [tab, setTab] = useState<"field" | "players" | "leaderboard">("field");
   const [selected, setSelected] = useState<string[]>([]);
   const [captain, setCaptain] = useState("");
   const [viceCaptain, setViceCaptain] = useState("");
   const [status, setStatus] = useState<string | null>(null);
 
   useEffect(() => {
-    const base = roster?.players.map(p => p.playerId) ?? players.slice(0, 11).map(p => p.id);
+    const base = roster?.players.map(p => p.playerId) ?? [];
     setSelected(base);
-    setCaptain(roster?.captainPlayerId ?? base[0] ?? "");
-    setViceCaptain(roster?.viceCaptainPlayerId ?? base[1] ?? "");
-  }, [roster, players]);
+    setCaptain(roster?.captainPlayerId ?? "");
+    setViceCaptain(roster?.viceCaptainPlayerId ?? "");
+  }, [roster]);
 
   const selectedPlayers = useMemo(() => players.filter(p => selected.includes(p.id)), [players, selected]);
   const creditsUsed = selectedPlayers.reduce((sum, p) => sum + p.credits, 0);
   const remaining = contest.salaryCap - creditsUsed;
   const isFull = selected.length === contest.rosterRules.totalPlayers;
   const locked = new Date(contest.lockTime) < new Date();
+
+  const roleCount = useMemo(() => {
+    const counts = { WK: 0, BAT: 0, AR: 0, BOWL: 0 };
+    selectedPlayers.forEach(p => {
+      counts[p.role as keyof typeof counts]++;
+    });
+    return counts;
+  }, [selectedPlayers]);
 
   const toggle = (id: string) => {
     if (locked) return;
@@ -98,26 +107,31 @@ function ContestCard({ contest, match, homeTeam, awayTeam, players, roster, lead
     setStatus(null);
     try {
       await onSubmit(contest.id, { playerIds: selected, captainPlayerId: captain, viceCaptainPlayerId: viceCaptain });
-      setStatus("Saved!");
+      setStatus("Team saved successfully!");
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : "Failed");
+      setStatus(e instanceof Error ? e.message : "Failed to save team");
     }
   };
 
+  const creditsPercent = (creditsUsed / contest.salaryCap) * 100;
+
   return (
-    <div className="card-hero overflow-hidden">
+    <div 
+      className="card overflow-hidden" 
+      style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='30' cy='30' r='25' fill='none' stroke='%2322c55e' stroke-opacity='0.03' stroke-width='1'/%3E%3C/svg%3E\")" }}
+    >
       <button
         onClick={() => setOpen(!open)}
         className="w-full p-5 flex items-center justify-between hover:bg-white/[0.02] transition-colors"
       >
         <div className="flex items-center gap-6">
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-accent-green/20 to-accent-green/5 flex items-center justify-center text-lg font-bold text-accent-green">
-              {homeTeam?.shortName?.slice(0, 2) ?? "H"}
+            <div className="w-12 h-12 rounded-xl bg-accent/10 border border-accent/20 flex items-center justify-center text-lg font-bold text-accent">
+              {homeTeam?.shortName?.slice(0, 3).toUpperCase() ?? "H"}
             </div>
-            <div>
-              <p className="text-xs text-text-muted uppercase tracking-wider">vs</p>
-              <p className="font-semibold">{awayTeam?.name ?? "Away"}</p>
+            <div className="px-3 py-1 text-xs font-bold text-text-muted">VS</div>
+            <div className="w-12 h-12 rounded-xl bg-accent/10 border border-accent/20 flex items-center justify-center text-lg font-bold text-accent">
+              {awayTeam?.shortName?.slice(0, 3).toUpperCase() ?? "A"}
             </div>
           </div>
           <div className="hidden md:flex items-center gap-2 text-sm text-text-muted">
@@ -126,91 +140,225 @@ function ContestCard({ contest, match, homeTeam, awayTeam, players, roster, lead
           </div>
         </div>
         <div className="flex items-center gap-3">
-          {roster && <span className="badge badge-live">Joined</span>}
+          {roster && <span className="badge badge-live">Team Set</span>}
           {open ? <ChevronUp className="w-5 h-5 text-text-muted" /> : <ChevronDown className="w-5 h-5 text-text-muted" />}
         </div>
       </button>
 
       {open && (
-        <div className="border-t border-border/50 p-5">
-          <div className="flex gap-4 mb-4">
-            <button onClick={() => setTab("squad")} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === "squad" ? "bg-accent-green/10 text-accent-green" : "text-text-muted hover:text-text"}`}>
-              <Users className="w-4 h-4 inline mr-2" />Squad
-            </button>
-            <button onClick={() => setTab("leaderboard")} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === "leaderboard" ? "bg-accent-green/10 text-accent-green" : "text-text-muted hover:text-text"}`}>
-              <TrendingUp className="w-4 h-4 inline mr-2" />Leaderboard
-            </button>
-            <div className="ml-auto flex items-center gap-4 text-sm">
-              <span><span className={isFull ? "text-accent-green" : ""}>{selected.length}</span>/{contest.rosterRules.totalPlayers}</span>
-              <span className={remaining < 0 ? "text-red-400" : "text-accent-orange"}>{remaining.toFixed(1)} cr</span>
+        <div className="border-t border-border">
+          <div className="p-4 border-b border-border bg-surface-elevated/50">
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="flex gap-2">
+                <button onClick={() => setTab("field")} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === "field" ? "bg-accent/10 text-accent" : "text-text-muted hover:text-text"}`}>
+                  Field View
+                </button>
+                <button onClick={() => setTab("players")} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === "players" ? "bg-accent/10 text-accent" : "text-text-muted hover:text-text"}`}>
+                  Player List
+                </button>
+                <button onClick={() => setTab("leaderboard")} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === "leaderboard" ? "bg-accent/10 text-accent" : "text-text-muted hover:text-text"}`}>
+                  <TrendingUp className="w-4 h-4 inline mr-1" />Standings
+                </button>
+              </div>
+              
+              <div className="flex-1" />
+              
+              <div className="flex items-center gap-6 text-sm">
+                <div className="flex items-center gap-2">
+                  <span className="text-text-muted">Players:</span>
+                  <span className={`font-bold ${isFull ? "text-accent" : ""}`}>{selected.length}/11</span>
+                </div>
+                <div className="w-32">
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-text-muted">Credits</span>
+                    <span className={remaining < 0 ? "text-red-400" : "text-accent"}>{remaining.toFixed(1)} left</span>
+                  </div>
+                  <div className="h-2 bg-surface rounded-full overflow-hidden">
+                    <div 
+                      className={`h-full transition-all ${remaining < 0 ? "bg-red-500" : "bg-accent"}`}
+                      style={{ width: `${Math.min(creditsPercent, 100)}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4 mt-3 text-xs">
+              <span className="text-text-muted">Team Balance:</span>
+              <span className="px-2 py-0.5 rounded bg-blue-500/20 text-blue-400">{roleCount.WK} WK</span>
+              <span className="px-2 py-0.5 rounded bg-green-500/20 text-green-400">{roleCount.BAT} BAT</span>
+              <span className="px-2 py-0.5 rounded bg-orange-500/20 text-orange-400">{roleCount.AR} AR</span>
+              <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-400">{roleCount.BOWL} BOWL</span>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
-              {tab === "squad" ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[300px] overflow-y-auto pr-2">
-                  {players.map(p => {
-                    const active = selected.includes(p.id);
-                    return (
-                      <button
-                        key={p.id}
-                        onClick={() => toggle(p.id)}
-                        disabled={locked}
-                        className={`flex items-center gap-3 p-3 rounded-xl border transition-all text-left ${active ? "bg-accent-green/10 border-accent-green/30" : "bg-surface-elevated border-border/30 hover:border-border/50"} ${locked ? "opacity-60 cursor-not-allowed" : ""}`}
-                      >
-                        <div className={`w-9 h-9 rounded-lg flex items-center justify-center text-xs font-bold ${p.teamId === match.homeTeamId ? "bg-accent-green/20 text-accent-green" : "bg-accent-orange/20 text-accent-orange"}`}>
-                          {p.name.slice(0, 2).toUpperCase()}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="font-medium text-sm truncate">{p.name}</p>
-                          <p className="text-xs text-text-muted">{p.role.slice(0, 3)} · {p.credits} cr</p>
-                        </div>
-                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${active ? "border-accent-green bg-accent-green" : "border-border"}`}>
-                          {active && <svg className="w-3 h-3 text-surface" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
-                        </div>
-                      </button>
-                    );
-                  })}
+          <div className="p-5">
+            {tab === "field" && (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="card p-4 bg-surface-elevated">
+                  <CricketField 
+                    players={players}
+                    selectedIds={selected}
+                    captainId={captain}
+                    viceCaptainId={viceCaptain}
+                  />
                 </div>
-              ) : (
-                <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
-                  {leaderboard.length === 0 ? (
-                    <div className="text-center py-10 text-text-muted">No entries yet</div>
-                  ) : leaderboard.map((e, i) => (
-                    <div key={e.id} className={`flex items-center justify-between p-3 rounded-xl ${i < 3 ? "bg-accent-orange/10 border border-accent-orange/20" : "bg-surface-elevated border border-border/30"}`}>
-                      <div className="flex items-center gap-3">
-                        <span className={`font-bold text-lg w-6 ${i === 0 ? "text-accent-gold" : i === 1 ? "text-zinc-400" : i === 2 ? "text-amber-600" : ""}`}>{e.rank}</span>
-                        <span className="font-medium text-sm">{e.userId.slice(0, 8)}...</span>
+                
+                <div className="space-y-4">
+                  <div>
+                    <h4 className="text-sm font-bold text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+                      <Star className="w-4 h-4 text-accent" />Captain Selection
+                    </h4>
+                    <div className="space-y-2">
+                      <div>
+                        <label className="text-xs text-text-muted mb-1 block">Captain (2x Points)</label>
+                        <select 
+                          value={captain} 
+                          onChange={e => setCaptain(e.target.value)} 
+                          disabled={locked} 
+                          className="w-full h-10 px-3 bg-surface border border-border rounded-xl text-sm focus:border-accent outline-none disabled:opacity-50"
+                        >
+                          <option value="">Select Captain</option>
+                          {selectedPlayers.map(p => <option key={p.id} value={p.id}>{p.name} ({p.role})</option>)}
+                        </select>
                       </div>
-                      <span className="font-bold font-mono">{e.points.toFixed(1)}</span>
+                      <div>
+                        <label className="text-xs text-text-muted mb-1 block">Vice Captain (1.5x Points)</label>
+                        <select 
+                          value={viceCaptain} 
+                          onChange={e => setViceCaptain(e.target.value)} 
+                          disabled={locked} 
+                          className="w-full h-10 px-3 bg-surface border border-border rounded-xl text-sm focus:border-accent outline-none disabled:opacity-50"
+                        >
+                          <option value="">Select Vice Captain</option>
+                          {selectedPlayers.filter(p => p.id !== captain).map(p => <option key={p.id} value={p.id}>{p.name} ({p.role})</option>)}
+                        </select>
+                      </div>
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                  </div>
 
-            <div className="space-y-4">
-              <div>
-                <div className="flex items-center gap-2 text-xs font-semibold text-text-muted uppercase tracking-wider mb-2">
-                  <Star className="w-4 h-4 text-accent-orange" />Leadership
-                </div>
-                <div className="space-y-2">
-                  <select value={captain} onChange={e => setCaptain(e.target.value)} disabled={locked} className="w-full h-10 px-3 bg-surface-elevated border border-border rounded-xl text-sm focus:border-accent-green outline-none">
-                    <option value="">Captain (2x)</option>
-                    {selectedPlayers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
-                  <select value={viceCaptain} onChange={e => setViceCaptain(e.target.value)} disabled={locked} className="w-full h-10 px-3 bg-surface-elevated border border-border rounded-xl text-sm focus:border-accent-green outline-none">
-                    <option value="">Vice Captain (1.5x)</option>
-                    {selectedPlayers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
+                  <div className="pt-4 border-t border-border">
+                    <h4 className="text-sm font-bold text-text-muted uppercase tracking-wider mb-3">Selected Players</h4>
+                    <div className="space-y-1 max-h-[200px] overflow-y-auto">
+                      {selectedPlayers.length === 0 ? (
+                        <p className="text-sm text-text-muted text-center py-4">Click on the field positions or use Player List to select your XI</p>
+                      ) : (
+                        selectedPlayers.map(p => (
+                          <div 
+                            key={p.id}
+                            className="flex items-center justify-between p-2 rounded-lg bg-surface hover:bg-surface-elevated transition-colors"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className={`w-6 h-6 rounded text-xs font-bold flex items-center justify-center ${
+                                p.role === "WK" ? "bg-blue-500/20 text-blue-400" :
+                                p.role === "BAT" ? "bg-green-500/20 text-green-400" :
+                                p.role === "AR" ? "bg-orange-500/20 text-orange-400" :
+                                "bg-purple-500/20 text-purple-400"
+                              }`}>
+                                {p.role}
+                              </span>
+                              <span className="text-sm font-medium">{p.name}</span>
+                              {p.id === captain && <span className="text-[10px] bg-yellow-500/20 text-yellow-400 px-1.5 py-0.5 rounded font-bold">C</span>}
+                              {p.id === viceCaptain && <span className="text-[10px] bg-slate-500/20 text-slate-400 px-1.5 py-0.5 rounded font-bold">VC</span>}
+                            </div>
+                            <button
+                              onClick={() => toggle(p.id)}
+                              disabled={locked}
+                              className="text-text-muted hover:text-red-400 transition-colors disabled:opacity-50"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                  
+                  <button 
+                    onClick={submit} 
+                    disabled={locked || !isFull || remaining < 0} 
+                    className="btn-primary w-full mt-4"
+                  >
+                    {roster ? "Update Team" : "Submit Team"}
+                  </button>
+                  {status && <div className={`p-3 rounded-xl text-sm text-center ${status.includes("Failed") ? "bg-red-500/10 text-red-400" : "bg-accent/10 text-accent"}`}>{status}</div>}
                 </div>
               </div>
-              <button onClick={submit} disabled={locked || !isFull || remaining < 0} className="btn-primary w-full">
-                {roster ? "Update" : "Submit"} Roster
-              </button>
-              {status && <div className={`p-3 rounded-xl text-sm text-center ${status.includes("Failed") ? "bg-red-500/10 text-red-400" : "bg-accent-green/10 text-accent-green"}`}>{status}</div>}
-            </div>
+            )}
+
+            {tab === "players" && (
+              <div className="space-y-4">
+                {["WK", "BAT", "AR", "BOWL"].map(role => {
+                  const rolePlayers = players.filter(p => p.role === role);
+                  const selectedInRole = rolePlayers.filter(p => selected.includes(p.id));
+                  
+                  return (
+                    <div key={role}>
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className={`px-2 py-0.5 rounded text-xs font-bold ${
+                          role === "WK" ? "bg-blue-500/20 text-blue-400" :
+                          role === "BAT" ? "bg-green-500/20 text-green-400" :
+                          role === "AR" ? "bg-orange-500/20 text-orange-400" :
+                          "bg-purple-500/20 text-purple-400"
+                        }`}>
+                          {role === "WK" ? "Wicket-Keeper" : role === "BAT" ? "Batsmen" : role === "AR" ? "All-Rounders" : "Bowlers"}
+                        </span>
+                        <span className="text-xs text-text-muted">{selectedInRole.length} selected</span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                        {rolePlayers.map(p => {
+                          const active = selected.includes(p.id);
+                          return (
+                            <button
+                              key={p.id}
+                              onClick={() => toggle(p.id)}
+                              disabled={locked}
+                              className={`flex items-center gap-3 p-3 rounded-xl border transition-all text-left ${active ? "bg-accent/10 border-accent/30" : "bg-surface-elevated border-border hover:border-accent/30"} ${locked ? "opacity-60 cursor-not-allowed" : ""}`}
+                            >
+                              <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-xs font-bold ${active ? "bg-accent/20 text-accent" : "bg-white/5 text-text-muted"}`}>
+                                {p.name.split(" ").map(n => n[0]).join("").slice(0, 2)}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="font-medium text-sm truncate">{p.name}</p>
+                                <p className="text-xs text-text-muted">{p.credits} credits</p>
+                              </div>
+                              <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${active ? "border-accent bg-accent" : "border-border"}`}>
+                                {active && <svg className="w-3 h-3 text-surface" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {tab === "leaderboard" && (
+              <div className="space-y-2">
+                {leaderboard.length === 0 ? (
+                  <div className="text-center py-10">
+                    <TrendingUp className="w-10 h-10 text-text-muted/50 mx-auto mb-2" />
+                    <p className="text-text-muted">No entries yet. Be the first to submit your team!</p>
+                  </div>
+                ) : (
+                  leaderboard.map((e, i) => (
+                    <div key={e.id} className={`flex items-center justify-between p-4 rounded-xl ${i < 3 ? "bg-accent/10 border border-accent/20" : "bg-surface-elevated border border-border"}`}>
+                      <div className="flex items-center gap-4">
+                        <span className={`w-8 h-8 rounded-full flex items-center justify-center font-bold ${i === 0 ? "bg-yellow-500/20 text-yellow-400" : i === 1 ? "bg-slate-400/20 text-slate-400" : i === 2 ? "bg-amber-600/20 text-amber-600" : "bg-surface text-text-muted"}`}>
+                          {e.rank}
+                        </span>
+                        <span className="font-medium">{e.userId.slice(0, 8)}...</span>
+                      </div>
+                      <span className="font-bold font-mono text-lg">{e.points.toFixed(1)}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

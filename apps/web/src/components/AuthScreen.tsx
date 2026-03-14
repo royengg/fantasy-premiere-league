@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Sparkles, Shield, Users, Trophy } from "lucide-react";
+import { Shield, Users, Trophy } from "lucide-react";
 
 interface AuthScreenProps {
   onSubmit: (payload: { name: string; email: string }) => Promise<unknown>;
@@ -29,41 +29,41 @@ export function AuthScreen({ onSubmit }: AuthScreenProps) {
       <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
         <div className="text-center lg:text-left">
           <div className="inline-flex items-center gap-3 mb-6">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-accent-green to-accent-green/60 flex items-center justify-center">
-              <Sparkles className="w-7 h-7 text-surface" />
+            <div className="w-14 h-14 rounded-xl bg-accent flex items-center justify-center">
+              <span className="text-xl font-black text-surface">FPL</span>
             </div>
-            <span className="text-2xl font-black">Fantasy Club</span>
+            <span className="text-2xl font-black">Fantasy Premier League</span>
           </div>
           
           <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight mb-4 leading-tight">
-            Play Fantasy.<br />
-            <span className="text-gradient-green">Earn Rewards.</span>
+            IPL Fantasy.<br />
+            <span className="text-accent">Play for Glory.</span>
           </h1>
           
           <p className="text-text-muted text-lg mb-8 max-w-md mx-auto lg:mx-0">
-            Build your dream XI, compete with friends, and unlock exclusive cosmetics. No real money involved.
+            Build your dream XI, compete with friends, and unlock exclusive cosmetics. Play-money only.
           </p>
           
           <div className="grid grid-cols-3 gap-4 max-w-sm mx-auto lg:mx-0">
             <div className="stat-block text-center">
-              <Users className="w-5 h-5 text-accent-green mx-auto mb-2" />
+              <Users className="w-5 h-5 text-accent mx-auto mb-2" />
               <span className="stat-value">10K+</span>
               <span className="stat-label">Players</span>
             </div>
             <div className="stat-block text-center">
-              <Trophy className="w-5 h-5 text-accent-orange mx-auto mb-2" />
+              <Trophy className="w-5 h-5 text-accent mx-auto mb-2" />
               <span className="stat-value">500+</span>
               <span className="stat-label">Leagues</span>
             </div>
             <div className="stat-block text-center">
-              <Shield className="w-5 h-5 text-accent-blue mx-auto mb-2" />
+              <Shield className="w-5 h-5 text-accent mx-auto mb-2" />
               <span className="stat-value">100%</span>
               <span className="stat-label">Free</span>
             </div>
           </div>
         </div>
 
-        <div className="card-hero p-8 max-w-md mx-auto w-full">
+        <div className="card p-8 max-w-md mx-auto w-full" style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg width='40' height='40' viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M20 0L40 20L20 40L0 20z' fill='%2322c55e' fill-opacity='0.02'/%3E%3C/svg%3E\")" }}>
           <h2 className="text-2xl font-bold mb-1">Welcome Back</h2>
           <p className="text-text-muted text-sm mb-6">Enter your details to continue</p>
           
@@ -74,7 +74,7 @@ export function AuthScreen({ onSubmit }: AuthScreenProps) {
                 type="text"
                 value={name}
                 onChange={e => setName(e.target.value)}
-                className="w-full mt-1.5 h-12 px-4 bg-surface border border-border rounded-xl text-text placeholder:text-text-muted focus:outline-none focus:border-accent-green transition-colors"
+                className="w-full mt-1.5 h-12 px-4 bg-surface border border-border rounded-xl text-text placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors"
                 required
               />
             </div>
@@ -85,7 +85,7 @@ export function AuthScreen({ onSubmit }: AuthScreenProps) {
                 type="email"
                 value={email}
                 onChange={e => setEmail(e.target.value)}
-                className="w-full mt-1.5 h-12 px-4 bg-surface border border-border rounded-xl text-text placeholder:text-text-muted focus:outline-none focus:border-accent-green transition-colors"
+                className="w-full mt-1.5 h-12 px-4 bg-surface border border-border rounded-xl text-text placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors"
                 required
               />
             </div>
@@ -98,12 +98,12 @@ export function AuthScreen({ onSubmit }: AuthScreenProps) {
             
             <button type="submit" disabled={loading} className="btn-primary w-full mt-2">
               {loading ? (
-                <span className="flex items-center gap-2">
+                <span className="flex items-center justify-center gap-2">
                   <span className="w-4 h-4 border-2 border-surface/30 border-t-surface rounded-full animate-spin" />
                   Signing in...
                 </span>
               ) : (
-                "Enter the Club"
+                "Enter"
               )}
             </button>
           </form>

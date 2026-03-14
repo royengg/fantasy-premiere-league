@@ -4,6 +4,12 @@ import type { AppStore } from "./store.js";
 const hoursFromNow = (hours: number) => new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
 const hoursAgo = (hours: number) => new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
 
+const defaultIplRules = {
+  maxPlayersPerTeam: 4 as const,
+  allowImpactPlayer: true,
+  uncappedBonusPoints: 10
+};
+
 export function createSeedStore(): AppStore {
   return {
     users: [
@@ -75,20 +81,20 @@ export function createSeedStore(): AppStore {
       }
     ],
     players: [
-      { id: "p1", name: "Arjun Rao", teamId: "team-ben", role: "WK", credits: 9, rating: 88 },
-      { id: "p2", name: "Neel Sharma", teamId: "team-ben", role: "BAT", credits: 9.5, rating: 93 },
-      { id: "p3", name: "Rohan Iyer", teamId: "team-ben", role: "BAT", credits: 8.5, rating: 84 },
-      { id: "p4", name: "Kabir Sen", teamId: "team-ben", role: "AR", credits: 9, rating: 90 },
-      { id: "p5", name: "Dev Malhotra", teamId: "team-ben", role: "BOWL", credits: 8.5, rating: 86 },
-      { id: "p6", name: "Vivaan Patel", teamId: "team-ben", role: "BOWL", credits: 8, rating: 81 },
-      { id: "p7", name: "Ishan Batra", teamId: "team-ben", role: "AR", credits: 8.5, rating: 82 },
-      { id: "p8", name: "Aarav Mehta", teamId: "team-mum", role: "WK", credits: 8.5, rating: 85 },
-      { id: "p9", name: "Samar Joshi", teamId: "team-mum", role: "BAT", credits: 9, rating: 89 },
-      { id: "p10", name: "Reyansh Kapoor", teamId: "team-mum", role: "BAT", credits: 8, rating: 80 },
-      { id: "p11", name: "Kunal Desai", teamId: "team-mum", role: "AR", credits: 8.5, rating: 87 },
-      { id: "p12", name: "Pranav Gill", teamId: "team-mum", role: "BOWL", credits: 9, rating: 91 },
-      { id: "p13", name: "Tanish Ali", teamId: "team-mum", role: "BOWL", credits: 8, rating: 79 },
-      { id: "p14", name: "Yuvraj Nanda", teamId: "team-mum", role: "BAT", credits: 7.5, rating: 77 }
+      { id: "p1", name: "Arjun Rao", teamId: "team-ben", role: "WK", credits: 9, rating: 88, nationality: "indian-capped", selectionPercent: 45 },
+      { id: "p2", name: "Neel Sharma", teamId: "team-ben", role: "BAT", credits: 9.5, rating: 93, nationality: "indian-capped", selectionPercent: 78 },
+      { id: "p3", name: "Rohan Iyer", teamId: "team-ben", role: "BAT", credits: 8.5, rating: 84, nationality: "indian-capped", selectionPercent: 52 },
+      { id: "p4", name: "Kabir Sen", teamId: "team-ben", role: "AR", credits: 9, rating: 90, nationality: "indian-capped", selectionPercent: 67 },
+      { id: "p5", name: "Dev Malhotra", teamId: "team-ben", role: "BOWL", credits: 8.5, rating: 86, nationality: "indian-capped", selectionPercent: 41 },
+      { id: "p6", name: "Vivaan Patel", teamId: "team-ben", role: "BOWL", credits: 8, rating: 81, nationality: "indian-uncapped", selectionPercent: 23 },
+      { id: "p7", name: "Ishan Batra", teamId: "team-ben", role: "AR", credits: 8.5, rating: 82, nationality: "indian-capped", selectionPercent: 38 },
+      { id: "p8", name: "Aarav Mehta", teamId: "team-mum", role: "WK", credits: 8.5, rating: 85, nationality: "indian-capped", selectionPercent: 56 },
+      { id: "p9", name: "Samar Joshi", teamId: "team-mum", role: "BAT", credits: 9, rating: 89, nationality: "indian-capped", selectionPercent: 61 },
+      { id: "p10", name: "Reyansh Kapoor", teamId: "team-mum", role: "BAT", credits: 8, rating: 80, nationality: "indian-uncapped", selectionPercent: 19 },
+      { id: "p11", name: "Kunal Desai", teamId: "team-mum", role: "AR", credits: 8.5, rating: 87, nationality: "indian-capped", selectionPercent: 44 },
+      { id: "p12", name: "Pranav Gill", teamId: "team-mum", role: "BOWL", credits: 9, rating: 91, nationality: "overseas", selectionPercent: 72 },
+      { id: "p13", name: "Tanish Ali", teamId: "team-mum", role: "BOWL", credits: 8, rating: 79, nationality: "indian-uncapped", selectionPercent: 15 },
+      { id: "p14", name: "Yuvraj Nanda", teamId: "team-mum", role: "BAT", credits: 7.5, rating: 77, nationality: "indian-uncapped", selectionPercent: 12 }
     ],
     matches: [
       {
@@ -108,6 +114,7 @@ export function createSeedStore(): AppStore {
         matchId: "match-1",
         salaryCap: 100,
         rosterRules: defaultRosterRules,
+        iplRules: defaultIplRules,
         lockTime: hoursFromNow(27),
         rewards: [
           {
@@ -127,6 +134,7 @@ export function createSeedStore(): AppStore {
         leagueId: "league-1",
         salaryCap: 100,
         rosterRules: defaultRosterRules,
+        iplRules: defaultIplRules,
         lockTime: hoursFromNow(27),
         rewards: [
           {
@@ -185,7 +193,8 @@ export function createSeedStore(): AppStore {
         viceCaptainPlayerId: "p12",
         totalCredits: 95,
         submittedAt: hoursAgo(2),
-        locked: false
+        locked: false,
+        hasUncappedPlayer: true
       }
     ],
     scoreEvents: [
@@ -323,4 +332,3 @@ export function createSeedStore(): AppStore {
     }
   };
 }
-

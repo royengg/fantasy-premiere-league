@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Brain, Clock, Zap, CheckCircle } from "lucide-react";
+import { Target, Clock, Star, CheckCircle, Flame } from "lucide-react";
 import type { PredictionAnswer, PredictionQuestion } from "@fantasy-cricket/types";
 
 interface PredictionViewProps {
@@ -23,23 +23,28 @@ export function PredictionView({ questions, answers, streak, onAnswer }: Predict
 
   return (
     <div className="space-y-8">
-      <div className="card-hero card-hero-blue p-6">
+      <div 
+        className="card p-6"
+        style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30 0L60 30L30 60L0 30z' fill='%2322c55e' fill-opacity='0.02'/%3E%3C/svg%3E\")" }}
+      >
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2 mb-2">
-              <Brain className="w-5 h-5 text-accent-blue" />
-              <span className="text-xs font-bold uppercase tracking-widest text-accent-blue">Forecast</span>
+              <Target className="w-5 h-5 text-accent" />
+              <span className="text-xs font-bold uppercase tracking-widest text-accent">Predictions</span>
             </div>
-            <h2 className="text-2xl font-bold">Predictions</h2>
+            <h2 className="text-2xl font-bold">Match Predictions</h2>
             <p className="text-text-muted text-sm mt-1">Answer correctly to earn XP and unlock rewards.</p>
           </div>
           <div className="flex gap-3">
             <div className="stat-block">
-              <span className="stat-value text-accent-orange">{streak}</span>
+              <Flame className="w-5 h-5 text-accent mb-1" />
+              <span className="stat-value text-accent">{streak}</span>
               <span className="stat-label">Streak</span>
             </div>
             <div className="stat-block">
-              <span className="stat-value text-accent-blue">{answers.length}</span>
+              <Target className="w-5 h-5 text-accent mb-1" />
+              <span className="stat-value">{answers.length}</span>
               <span className="stat-label">Answered</span>
             </div>
           </div>
@@ -47,9 +52,9 @@ export function PredictionView({ questions, answers, streak, onAnswer }: Predict
       </div>
 
       {questions.length === 0 ? (
-        <div className="text-center py-20">
-          <div className="w-20 h-20 rounded-full bg-white/5 flex items-center justify-center mx-auto mb-4">
-            <Brain className="w-10 h-10 text-text-muted/50" />
+        <div className="card p-8 text-center">
+          <div className="w-20 h-20 rounded-full bg-white/5 border border-border flex items-center justify-center mx-auto mb-4">
+            <Target className="w-10 h-10 text-text-muted/50" />
           </div>
           <h2 className="text-xl font-bold mb-2">No Predictions Available</h2>
           <p className="text-text-muted">Check back closer to matchday.</p>
@@ -63,11 +68,15 @@ export function PredictionView({ questions, answers, streak, onAnswer }: Predict
             const loading = submitting === q.id;
 
             return (
-              <div key={q.id} className={`card-hero p-5 transition-colors ${answered ? "border-accent-green/30" : ""}`}>
+              <div 
+                key={q.id} 
+                className={`card p-5 transition-colors ${answered ? "border-accent/30" : ""}`}
+                style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg width='40' height='40' viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='20' cy='20' r='15' fill='none' stroke='%2322c55e' stroke-opacity='0.03' stroke-width='1'/%3E%3C/svg%3E\")" }}
+              >
                 <div className="flex items-start justify-between mb-3">
-                  <span className="badge bg-accent-blue/10 text-accent-blue border-accent-blue/20">{q.category.replace("-", " ")}</span>
-                  <span className="flex items-center gap-1 text-xs font-bold text-accent-orange">
-                    <Zap className="w-3 h-3" />+{q.xpReward} XP
+                  <span className="badge">{q.category.replace("-", " ")}</span>
+                  <span className="flex items-center gap-1 text-xs font-bold text-accent">
+                    <Star className="w-3 h-3" />+{q.xpReward} XP
                   </span>
                 </div>
                 <h3 className="font-semibold mb-2">{q.prompt}</h3>
@@ -85,10 +94,10 @@ export function PredictionView({ questions, answers, streak, onAnswer }: Predict
                         disabled={answered || locked || loading}
                         className={`w-full flex items-center justify-between p-3 rounded-xl border text-sm transition-all ${
                           selected
-                            ? "bg-accent-green text-surface border-accent-green font-semibold"
+                            ? "bg-accent text-surface border-accent font-semibold"
                             : answered || locked
-                              ? "bg-surface-elevated border-border/30 opacity-60 cursor-not-allowed"
-                              : "bg-surface-elevated border-border/30 hover:border-accent-blue/50"
+                              ? "bg-surface-elevated border-border opacity-60 cursor-not-allowed"
+                              : "bg-surface-elevated border-border hover:border-accent/50"
                         }`}
                       >
                         {opt.label}

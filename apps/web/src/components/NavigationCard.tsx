@@ -1,68 +1,33 @@
-import { LucideIcon, Swords, Trophy, Brain, Package } from "lucide-react";
+import { LucideIcon, Users, Trophy, Target, Package } from "lucide-react";
 
 interface NavigationCardProps {
   title: string;
   subtitle: string;
   icon: LucideIcon;
-  accent: "green" | "orange" | "blue" | "purple";
   stats: { value: number | string; label: string };
   onClick: () => void;
 }
 
-const accentConfig = {
-  green: {
-    cardClass: "card-hero-green card-glow-green",
-    iconBg: "bg-accent-green/20",
-    iconColor: "text-accent-green",
-    textClass: "text-gradient-green",
-    statBg: "bg-accent-green/10",
-    statText: "text-accent-green"
-  },
-  orange: {
-    cardClass: "card-hero-orange card-glow-orange",
-    iconBg: "bg-accent-orange/20",
-    iconColor: "text-accent-orange",
-    textClass: "text-gradient-orange",
-    statBg: "bg-accent-orange/10",
-    statText: "text-accent-orange"
-  },
-  blue: {
-    cardClass: "card-hero-blue card-glow-blue",
-    iconBg: "bg-accent-blue/20",
-    iconColor: "text-accent-blue",
-    textClass: "text-gradient-blue",
-    statBg: "bg-accent-blue/10",
-    statText: "text-accent-blue"
-  },
-  purple: {
-    cardClass: "card-hero-purple card-glow-purple",
-    iconBg: "bg-accent-purple/20",
-    iconColor: "text-accent-purple",
-    textClass: "text-accent-purple",
-    statBg: "bg-accent-purple/10",
-    statText: "text-accent-purple"
-  }
-};
+const cardBg = `url("data:image/svg+xml,%3Csvg width='80' height='80' viewBox='0 0 80 80' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='40' cy='40' r='30' fill='none' stroke='%2322c55e' stroke-opacity='0.04' stroke-width='2'/%3E%3Ccircle cx='40' cy='40' r='8' fill='%2322c55e' fill-opacity='0.03'/%3E%3C/svg%3E")`;
 
-export function NavigationCard({ title, subtitle, icon: Icon, accent, stats, onClick }: NavigationCardProps) {
-  const config = accentConfig[accent];
-  
+export function NavigationCard({ title, subtitle, icon: Icon, stats, onClick }: NavigationCardProps) {
   return (
     <button
       onClick={onClick}
-      className={`card-hero ${config.cardClass} p-6 w-full text-left cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-green`}
+      className="card card-interactive w-full text-left p-6 relative overflow-hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      style={{ backgroundImage: cardBg }}
     >
       <div className="flex items-start justify-between mb-8">
-        <div className={`w-14 h-14 rounded-2xl ${config.iconBg} flex items-center justify-center`}>
-          <Icon className={`w-7 h-7 ${config.iconColor}`} />
+        <div className="w-12 h-12 rounded-xl bg-accent/10 border border-accent/20 flex items-center justify-center">
+          <Icon className="w-6 h-6 text-accent" />
         </div>
-        <div className={`px-3 py-1.5 rounded-lg ${config.statBg}`}>
-          <span className={`text-xl font-extrabold ${config.statText}`}>{stats.value}</span>
-          <span className="text-xs text-text-muted ml-1">{stats.label}</span>
+        <div className="text-right">
+          <span className="text-2xl font-extrabold text-accent">{stats.value}</span>
+          <span className="block text-xs text-text-muted">{stats.label}</span>
         </div>
       </div>
       
-      <h2 className="text-2xl font-extrabold mb-1">{title}</h2>
+      <h2 className="text-xl font-bold mb-1">{title}</h2>
       <p className="text-text-muted text-sm">{subtitle}</p>
       
       <div className="mt-6 flex items-center gap-2 text-text-muted text-sm font-medium">

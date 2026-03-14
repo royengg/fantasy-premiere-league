@@ -1,10 +1,12 @@
+export * from "./cricket-data";
+
 export type ID = string;
 
 export type TeamRole = "WK" | "BAT" | "AR" | "BOWL";
 export type MatchState = "scheduled" | "live" | "completed";
 export type LeagueVisibility = "public" | "private";
 export type ContestKind = "public" | "private";
-export type PredictionCategory = "winner" | "player-performance" | "total" | "milestone";
+export type PredictionCategory = "toss" | "powerplay-runs" | "most-wickets" | "highest-score" | "man-of-match" | "winner" | "player-performance" | "total" | "milestone";
 export type PredictionState = "open" | "locked" | "settled";
 export type BadgeCategory = "streak" | "rank" | "seasonal" | "milestone";
 export type CosmeticCategory =
@@ -14,6 +16,8 @@ export type CosmeticCategory =
   | "card-skin"
   | "badge-title";
 export type CosmeticRarity = "common" | "rare" | "epic";
+export type PlayerNationality = "indian-capped" | "indian-uncapped" | "overseas";
+export type FormIndicator = "hot" | "good" | "average" | "cold";
 
 export interface User {
   id: ID;
@@ -64,6 +68,19 @@ export interface Player {
   role: TeamRole;
   credits: number;
   rating: number;
+  nationality: PlayerNationality;
+  selectionPercent: number;
+}
+
+export interface PlayerStats {
+  playerId: ID;
+  lastFiveMatches: number[];
+  totalPoints: number;
+  averagePoints: number;
+  highestScore: number;
+  vsTeam: Record<ID, { matches: number; avgPoints: number }>;
+  venueRecord: Record<string, { matches: number; avgPoints: number }>;
+  form: FormIndicator;
 }
 
 export interface Match {
@@ -75,10 +92,48 @@ export interface Match {
   state: MatchState;
 }
 
+export interface LiveMatchData {
+  matchId: ID;
+  innings: 1 | 2;
+  currentOver: number;
+  currentBall: number;
+  battingTeamId: ID;
+  bowlingTeamId: ID;
+  score: number;
+  wickets: number;
+  overs: string;
+  currentBatsmen: { playerId: ID; runs: number; balls: number }[];
+  currentBowler: { playerId: ID; overs: number; wickets: number; runs: number };
+  partnership: { runs: number; balls: number };
+  requiredRunRate?: number;
+  currentRunRate: number;
+  recentBalls: BallEvent[];
+  target?: number;
+}
+
+export interface BallEvent {
+  over: number;
+  ball: number;
+  runs: number;
+  type: "run" | "boundary" | "six" | "wicket" | "wide" | "no-ball" | "dot";
+  batsmanId: ID;
+  bowlerId: ID;
+  points: number;
+  description: string;
+  timestamp: string;
+}
+
 export interface RosterRules {
   totalPlayers: number;
   minByRole: Record<TeamRole, number>;
   maxByRole: Record<TeamRole, number>;
+  maxPerTeam: number;
+}
+
+export interface IPLRules {
+  maxPlayersPerTeam: 4;
+  allowImpactPlayer: boolean;
+  uncappedBonusPoints: number;
 }
 
 export interface SeasonReward {
@@ -98,6 +153,7 @@ export interface Contest {
   leagueId?: ID;
   salaryCap: number;
   rosterRules: RosterRules;
+  iplRules: IPLRules;
   lockTime: string;
   rewards: SeasonReward[];
 }
@@ -125,9 +181,21 @@ export interface Roster {
   players: RosterPlayerSelection[];
   captainPlayerId: ID;
   viceCaptainPlayerId: ID;
+  impactPlayerId?: ID;
   totalCredits: number;
   submittedAt: string;
   locked: boolean;
+  hasUncappedPlayer: boolean;
+}
+
+export interface LiveRosterPoints {
+  rosterId: ID;
+  userId: ID;
+  totalPoints: number;
+  projectedPoints: number;
+  rank: number;
+  previousRank: number;
+  playerPoints: { playerId: ID; points: number; projectedPoints: number; recentEvents: BallEvent[] }[];
 }
 
 export interface FantasyScoreEvent {
@@ -153,7 +221,9 @@ export interface LeaderboardEntry {
   userId: ID;
   points: number;
   rank: number;
+  previousRank: number;
   trend: "up" | "down" | "steady";
+  projectedPoints?: number;
 }
 
 export interface PredictionOption {
@@ -248,6 +318,7 @@ export interface DashboardPayload {
   matches: Match[];
   teams: Team[];
   players: Player[];
+  playerStats: PlayerStats[];
   rosters: Roster[];
   leaderboard: LeaderboardEntry[];
   questions: PredictionQuestion[];
@@ -263,11 +334,14 @@ export interface RosterValidationResult {
   valid: boolean;
   totalCredits: number;
   errors: string[];
+  warnings: string[];
+  teamCount: Record<ID, number>;
+  hasUncappedPlayer: boolean;
 }
 
 export interface BuildRosterInput {
   playerIds: ID[];
   captainPlayerId: ID;
   viceCaptainPlayerId: ID;
+  impactPlayerId?: ID;
 }
-

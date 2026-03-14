@@ -10,6 +10,7 @@ import type {
   League,
   Match,
   Player,
+  PlayerStats,
   PredictionAnswer,
   PredictionQuestion,
   Profile,
@@ -58,6 +59,25 @@ export class GameService {
     return inventory;
   }
 
+  private generatePlayerStats(): PlayerStats[] {
+    return this.store.players.map((player) => ({
+      playerId: player.id,
+      lastFiveMatches: [
+        Math.floor(Math.random() * 50) + 5,
+        Math.floor(Math.random() * 50) + 5,
+        Math.floor(Math.random() * 50) + 5,
+        Math.floor(Math.random() * 50) + 5,
+        Math.floor(Math.random() * 50) + 5
+      ],
+      totalPoints: Math.floor(Math.random() * 500) + 100,
+      averagePoints: Math.floor(Math.random() * 30) + 10,
+      highestScore: Math.floor(Math.random() * 100) + 30,
+      vsTeam: {},
+      venueRecord: {},
+      form: player.rating > 88 ? "hot" : player.rating > 82 ? "good" : player.rating > 78 ? "average" : "cold"
+    }));
+  }
+
   getDashboard(userId: string): DashboardPayload {
     const user = this.getUser(userId);
     const inventory = this.getInventoryRecord(userId);
@@ -72,6 +92,7 @@ export class GameService {
       matches: this.store.matches,
       teams: this.store.teams,
       players: this.store.players,
+      playerStats: this.generatePlayerStats(),
       rosters: this.store.rosters.filter((roster) => roster.userId === userId || this.isPublicContest(roster.contestId)),
       leaderboard: this.store.leaderboard,
       questions: this.store.questions,
@@ -146,7 +167,8 @@ export class GameService {
       viceCaptainPlayerId: input.viceCaptainPlayerId,
       totalCredits: validation.totalCredits,
       submittedAt: new Date().toISOString(),
-      locked: new Date() >= new Date(contest.lockTime)
+      locked: new Date() >= new Date(contest.lockTime),
+      hasUncappedPlayer: validation.hasUncappedPlayer
     };
 
     if (existing) {
@@ -294,6 +316,9 @@ export class GameService {
     const players = this.playersForMatch(this.getMatch(contest.matchId));
     const events = this.scoreEventsForContest(contest);
 
+    const previousLeaderboard = this.store.leaderboard.filter((entry) => entry.contestId === contest.id);
+    const previousRanks = new Map(previousLeaderboard.map((entry) => [entry.userId, entry.rank]));
+
     const ranked = this.store.rosters
       .filter((roster) => roster.contestId === contest.id)
       .map((roster) => ({
@@ -303,14 +328,20 @@ export class GameService {
       .sort((left, right) => right.score - left.score);
 
     const withoutContest = this.store.leaderboard.filter((entry) => entry.contestId !== contest.id);
-    const nextEntries: LeaderboardEntry[] = ranked.map(({ roster, score }, index) => ({
-      id: `${contest.id}-${roster.userId}`,
-      contestId: contest.id,
-      userId: roster.userId,
-      points: score,
-      rank: index + 1,
-      trend: "steady"
-    }));
+    const nextEntries: LeaderboardEntry[] = ranked.map(({ roster, score }, index) => {
+      const currentRank = index + 1;
+      const prevRank = previousRanks.get(roster.userId) ?? currentRank;
+      
+      return {
+        id: `${contest.id}-${roster.userId}`,
+        contestId: contest.id,
+        userId: roster.userId,
+        points: score,
+        rank: currentRank,
+        previousRank: prevRank,
+        trend: currentRank < prevRank ? "up" : currentRank > prevRank ? "down" : "steady"
+      };
+    });
 
     this.store.leaderboard = [...withoutContest, ...nextEntries];
   }

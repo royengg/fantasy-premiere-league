@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { io } from "socket.io-client";
-import { Swords, Trophy, Brain, Package, ArrowLeft, Zap, Flame, Crown } from "lucide-react";
+import { Star, Flame, Crown, Users, Trophy, Target, Package } from "lucide-react";
 
 import { createApiClient } from "@fantasy-cricket/api-client";
 import type { BuildRosterInput } from "@fantasy-cricket/types";
 
 import { ThemeProvider } from "./components/ThemeProvider";
-import { Navbar } from "./components/Navbar";
+import { Sidebar } from "./components/Sidebar";
 import { NavigationCard } from "./components/NavigationCard";
 import { ContestView } from "./components/ContestView";
 import { LeagueView } from "./components/LeagueView";
@@ -84,6 +84,11 @@ export function App() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["dashboard"] })
   });
 
+  const handleLogout = () => {
+    localStorage.removeItem(STORAGE_KEY);
+    setUserId(null);
+  };
+
   if (!userId) {
     return (
       <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
@@ -96,7 +101,7 @@ export function App() {
     return (
       <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
         <div className="min-h-screen bg-surface flex items-center justify-center">
-          <div className="w-12 h-12 border-2 border-accent-green/20 border-t-accent-green rounded-full animate-spin" />
+          <div className="w-12 h-12 border-2 border-accent/20 border-t-accent rounded-full animate-spin" />
         </div>
       </ThemeProvider>
     );
@@ -119,33 +124,29 @@ export function App() {
     {
       id: "contests" as Screen,
       title: "Contests",
-      subtitle: "Build your XI",
-      icon: Swords,
-      accent: "green" as const,
-      stats: { value: dashboard.contests.length, label: "Live" }
+      subtitle: "Select your playing XI",
+      icon: Users,
+      stats: { value: dashboard.contests.length, label: "Live Matches" }
     },
     {
       id: "leagues" as Screen,
       title: "Leagues",
       subtitle: "Compete with friends",
       icon: Trophy,
-      accent: "orange" as const,
       stats: { value: dashboard.leagues.length, label: "Active" }
     },
     {
       id: "predictions" as Screen,
-      title: "Predict",
-      subtitle: "Earn XP rewards",
-      icon: Brain,
-      accent: "blue" as const,
+      title: "Predictions",
+      subtitle: "Predict match outcomes",
+      icon: Target,
       stats: { value: dashboard.profile.streak, label: "Day Streak" }
     },
     {
       id: "locker" as Screen,
       title: "Locker",
-      subtitle: "Your collection",
+      subtitle: "Your achievements",
       icon: Package,
-      accent: "purple" as const,
       stats: { value: dashboard.inventory.cosmeticIds.length, label: "Items" }
     }
   ];
@@ -197,78 +198,72 @@ export function App() {
     }
   };
 
-  if (screen !== "home") {
-    const currentItem = navItems.find(i => i.id === screen);
-    return (
-      <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
-        <div className="min-h-screen bg-surface bg-grid">
-          <Navbar
-            username={dashboard.profile.username}
-            xp={dashboard.profile.xp}
-            level={dashboard.profile.level}
-            onLogout={() => { localStorage.removeItem(STORAGE_KEY); setUserId(null); }}
-          />
-          <main className="max-w-6xl mx-auto px-4 py-6">
-            <button
-              onClick={() => setScreen("home")}
-              className="flex items-center gap-2 text-text-muted hover:text-text transition-colors mb-6"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              <span className="text-sm font-medium">Home</span>
-            </button>
-            {renderScreen()}
-          </main>
-        </div>
-      </ThemeProvider>
-    );
-  }
-
   return (
     <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
-      <div className="min-h-screen bg-surface bg-grid bg-radial">
-        <Navbar
-          username={dashboard.profile.username}
-          xp={dashboard.profile.xp}
-          level={dashboard.profile.level}
-          onLogout={() => { localStorage.removeItem(STORAGE_KEY); setUserId(null); }}
+      <div className="min-h-screen bg-surface">
+        <Sidebar 
+          currentScreen={screen}
+          onNavigate={(s) => setScreen(s as Screen)}
+          onLogout={handleLogout}
         />
         
-        <main className="max-w-6xl mx-auto px-4 py-8">
-          <header className="mb-12">
-            <p className="text-accent-green text-xs font-bold uppercase tracking-widest mb-2">Season 1</p>
-            <h1 className="text-5xl font-extrabold tracking-tight mb-3">
-              Hey, {dashboard.profile.username.split(" ")[0]}
-            </h1>
-            <p className="text-text-muted text-lg">What are you playing today?</p>
-          </header>
+        <main className="ml-16 lg:ml-64 min-h-screen bg-grid bg-radial">
+          {screen === "home" ? (
+            <div className="p-6 lg:p-8">
+              <header className="mb-10">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-accent text-xs font-bold uppercase tracking-widest mb-2">IPL 2026</p>
+                    <h1 className="text-3xl lg:text-4xl font-extrabold tracking-tight mb-2">
+                      Hey, {dashboard.profile.username.split(" ")[0]}
+                    </h1>
+                    <p className="text-text-muted">What are you playing today?</p>
+                  </div>
+                  <div className="hidden sm:flex items-center gap-3">
+                    <div className="text-right">
+                      <p className="text-sm font-semibold">{dashboard.profile.username}</p>
+                      <p className="text-xs text-text-muted">Level {dashboard.profile.level}</p>
+                    </div>
+                    <div className="w-10 h-10 rounded-full bg-accent/20 border border-accent/30 flex items-center justify-center text-sm font-bold text-accent">
+                      {dashboard.profile.username.charAt(0).toUpperCase()}
+                    </div>
+                  </div>
+                </div>
+              </header>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-12">
-            {navItems.map(item => (
-              <NavigationCard
-                key={item.id}
-                {...item}
-                onClick={() => setScreen(item.id)}
-              />
-            ))}
-          </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 lg:gap-6 mb-8">
+                {navItems.map(item => (
+                  <NavigationCard
+                    key={item.id}
+                    {...item}
+                    onClick={() => setScreen(item.id)}
+                  />
+                ))}
+              </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="stat-block">
-              <Zap className="w-5 h-5 text-accent-green mb-2" />
-              <span className="stat-value text-gradient-green">{dashboard.profile.xp.toLocaleString()}</span>
-              <span className="stat-label">Total XP</span>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="stat-block">
+                  <Star className="w-5 h-5 text-accent mb-2" />
+                  <span className="stat-value text-accent">{dashboard.profile.xp.toLocaleString()}</span>
+                  <span className="stat-label">Total XP</span>
+                </div>
+                <div className="stat-block">
+                  <Flame className="w-5 h-5 text-accent mb-2" />
+                  <span className="stat-value">{dashboard.profile.streak}</span>
+                  <span className="stat-label">Day Streak</span>
+                </div>
+                <div className="stat-block">
+                  <Crown className="w-5 h-5 text-accent mb-2" />
+                  <span className="stat-value">Lv.{dashboard.profile.level}</span>
+                  <span className="stat-label">Level</span>
+                </div>
+              </div>
             </div>
-            <div className="stat-block">
-              <Flame className="w-5 h-5 text-accent-orange mb-2" />
-              <span className="stat-value text-gradient-orange">{dashboard.profile.streak}</span>
-              <span className="stat-label">Day Streak</span>
+          ) : (
+            <div className="p-6 lg:p-8">
+              {renderScreen()}
             </div>
-            <div className="stat-block">
-              <Crown className="w-5 h-5 text-accent-gold mb-2" />
-              <span className="stat-value text-gradient-orange">Lv.{dashboard.profile.level}</span>
-              <span className="stat-label">Current Rank</span>
-            </div>
-          </div>
+          )}
         </main>
       </div>
     </ThemeProvider>

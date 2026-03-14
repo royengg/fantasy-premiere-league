@@ -10,7 +10,8 @@ import type {
   Profile,
   RosterRules,
   RosterValidationResult,
-  UserInventory
+  UserInventory,
+  PlayerNationality
 } from "@fantasy-cricket/types";
 
 export const defaultRosterRules: RosterRules = {
@@ -26,7 +27,8 @@ export const defaultRosterRules: RosterRules = {
     BAT: 5,
     AR: 4,
     BOWL: 5
-  }
+  },
+  maxPerTeam: 4
 };
 
 export function validateRoster(
@@ -37,6 +39,7 @@ export function validateRoster(
   now = new Date()
 ): RosterValidationResult {
   const errors: string[] = [];
+  const warnings: string[] = [];
   const lockTime = new Date(contest.lockTime);
 
   if (now >= lockTime) {
@@ -77,6 +80,17 @@ export function validateRoster(
     }
   }
 
+  const teamCount: Record<ID, number> = {};
+  for (const player of selected) {
+    teamCount[player.teamId] = (teamCount[player.teamId] || 0) + 1;
+  }
+
+  for (const [teamId, count] of Object.entries(teamCount)) {
+    if (count > contest.iplRules.maxPlayersPerTeam) {
+      errors.push(`Maximum ${contest.iplRules.maxPlayersPerTeam} players allowed from one team.`);
+    }
+  }
+
   if (!input.playerIds.includes(input.captainPlayerId)) {
     errors.push("Captain must be selected in the roster.");
   }
@@ -89,10 +103,21 @@ export function validateRoster(
     errors.push("Captain and vice captain must be different players.");
   }
 
+  const hasUncappedPlayer = selected.some(
+    (p) => (p as Player & { nationality?: PlayerNationality }).nationality === "indian-uncapped"
+  );
+
+  if (!hasUncappedPlayer) {
+    warnings.push("Consider selecting an uncapped player for bonus points.");
+  }
+
   return {
     valid: errors.length === 0,
     totalCredits,
-    errors
+    errors,
+    warnings,
+    teamCount,
+    hasUncappedPlayer
   };
 }
 
@@ -167,4 +192,3 @@ export function unlockCosmetic(
     }
   };
 }
-
