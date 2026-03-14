@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "baseUrl": ".",
+    "paths": {
+      "@fantasy-cricket/types": ["packages/types/src/index.ts"],
+      "@fantasy-cricket/validators": ["packages/validators/src/index.ts"],
+      "@fantasy-cricket/domain": ["packages/domain/src/index.ts"],
+      "@fantasy-cricket/scoring": ["packages/scoring/src/index.ts"],
+      "@fantasy-cricket/api-client": ["packages/api-client/src/index.ts"]
+    }
+  }
+}

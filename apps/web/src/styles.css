@@ -1,0 +1,106 @@
+@import "tailwindcss";
+
+@theme {
+  --color-border: hsl(214.3 31.8% 91.4%);
+  --color-input: hsl(214.3 31.8% 91.4%);
+  --color-ring: hsl(142.1 76.2% 36.3%);
+  --color-background: hsl(0 0% 100%);
+  --color-foreground: hsl(222.2 84% 4.9%);
+  
+  --color-primary: hsl(142.1 76.2% 36.3%);
+  --color-primary-foreground: hsl(355.7 100% 97.3%);
+  
+  --color-secondary: hsl(24.6 95% 53.1%);
+  --color-secondary-foreground: hsl(222.2 47.4% 11.2%);
+  
+  --color-destructive: hsl(0 84.2% 60.2%);
+  --color-destructive-foreground: hsl(210 40% 98%);
+  
+  --color-muted: hsl(210 40% 96.1%);
+  --color-muted-foreground: hsl(215.4 16.3% 46.9%);
+  
+  --color-accent: hsl(210 40% 96.1%);
+  --color-accent-foreground: hsl(222.2 47.4% 11.2%);
+
+  --color-popover: hsl(0 0% 100%);
+  --color-popover-foreground: hsl(222.2 84% 4.9%);
+  
+  --color-card: hsl(0 0% 100%);
+  --color-card-foreground: hsl(222.2 84% 4.9%);
+
+  --radius: 0.75rem;
+}
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 142.1 76.2% 36.3%;
+    --primary-foreground: 355.7 100% 97.3%;
+    --secondary: 24.6 95% 53.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 142.1 76.2% 36.3%;
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    --background: 218 39% 10%;
+    --foreground: 210 40% 98%;
+    --card: 217 38% 13%;
+    --card-foreground: 210 40% 98%;
+    --popover: 218 39% 10%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 153 60% 53%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 24.6 95% 53.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 217 32% 17%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217 32% 17%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217 32% 17%;
+    --input: 217 32% 17%;
+    --ring: 153 60% 53%;
+  }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+  
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    @apply tracking-tight transition-colors duration-300;
+    min-height: 100vh;
+  }
+}
+
+@layer utilities {
+  .glass-panel {
+    background-color: hsla(var(--background) / 0.6);
+    @apply backdrop-blur-xl border border-white/10 dark:border-white/5;
+  }
+  
+  .glow-effect {
+    @apply shadow-[0_0_20px_rgba(34,197,94,0.3)] dark:shadow-[0_0_30px_rgba(20,184,166,0.2)];
+  }
+  
+  .gradient-text {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-primary to-secondary;
+  }
+  
+}

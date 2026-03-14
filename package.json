@@ -1,0 +1,36 @@
+{
+  "name": "play-money-fantasy-cricket",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.5",
+  "engines": {
+    "node": ">=22.12.0",
+    "bun": ">=1.3.5"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "overrides": {
+    "@hono/node-server": "1.19.10",
+    "hono": "4.12.7",
+    "lodash": "4.17.23"
+  },
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "dev:api": "bun run --cwd apps/api dev",
+    "dev:web": "bun run --cwd apps/web dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "vitest run",
+    "prisma:generate": "bun run --cwd apps/api prisma:generate",
+    "prisma:push": "bun run --cwd apps/api prisma:push",
+    "prisma:migrate": "bun run --cwd apps/api prisma:migrate"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "turbo": "^2.8.17",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "@fantasy-cricket/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prisma:generate": "prisma generate --config prisma.config.ts",
+    "prisma:push": "prisma db push --config prisma.config.ts",
+    "prisma:migrate": "prisma migrate dev --config prisma.config.ts"
+  },
+  "dependencies": {
+    "@fantasy-cricket/domain": "workspace:*",
+    "@fantasy-cricket/scoring": "workspace:*",
+    "@fantasy-cricket/types": "workspace:*",
+    "@fantasy-cricket/validators": "workspace:*",
+    "@prisma/adapter-neon": "7.5.0",
+    "@prisma/client": "7.5.0",
+    "bullmq": "^5.16.0",
+    "cors": "^2.8.5",
+    "express": "^5.2.1",
+    "socket.io": "^4.8.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "prisma": "7.5.0",
+    "tsx": "^4.19.1"
+  }
+}

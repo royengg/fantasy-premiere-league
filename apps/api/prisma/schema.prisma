@@ -1,0 +1,165 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id           String            @id
+  email        String            @unique
+  name         String
+  createdAt    DateTime          @default(now())
+  profile      Profile?
+  rosters      Roster[]
+  friendshipsA Friendship[]      @relation("FriendshipRequester")
+  friendshipsB Friendship[]      @relation("FriendshipAddressee")
+  answers      PredictionAnswer[]
+  xpLedger     XPTransaction[]
+  unlocks      CosmeticUnlock[]
+}
+
+model Profile {
+  userId             String  @id
+  username           String  @unique
+  bio                String?
+  favoriteTeamId     String?
+  xp                 Int     @default(0)
+  level              Int     @default(1)
+  streak             Int     @default(0)
+  equippedProfile    String?
+  equippedFrame      String?
+  equippedLeague     String?
+  equippedCard       String?
+  equippedTitle      String?
+  user               User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Friendship {
+  id          String   @id
+  requesterId String
+  addresseeId String
+  status      String
+  createdAt   DateTime @default(now())
+  requester   User     @relation("FriendshipRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  addressee   User     @relation("FriendshipAddressee", fields: [addresseeId], references: [id], onDelete: Cascade)
+}
+
+model Team {
+  id        String   @id
+  name      String
+  shortName String
+  city      String
+  players   Player[]
+}
+
+model Player {
+  id      String @id
+  name    String
+  teamId  String
+  role    String
+  credits Float
+  rating  Float
+  team    Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+}
+
+model Match {
+  id         String   @id
+  homeTeamId String
+  awayTeamId String
+  startsAt   DateTime
+  venue      String
+  state      String
+}
+
+model Contest {
+  id         String   @id
+  name       String
+  kind       String
+  matchId    String
+  leagueId   String?
+  salaryCap  Float
+  lockTime   DateTime
+}
+
+model League {
+  id          String   @id
+  name        String
+  description String?
+  visibility  String
+  createdBy   String
+  inviteCode  String   @unique
+  bannerStyle String
+}
+
+model Roster {
+  id                String   @id
+  contestId         String
+  userId            String
+  captainPlayerId   String
+  viceCaptainPlayerId String
+  totalCredits      Float
+  submittedAt       DateTime
+  locked            Boolean
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PredictionQuestion {
+  id               String   @id
+  matchId          String
+  prompt           String
+  category         String
+  locksAt          DateTime
+  resolvesAt       DateTime
+  state            String
+  xpReward         Int
+  badgeRewardId    String?
+  cosmeticRewardId String?
+  answers          PredictionAnswer[]
+}
+
+model PredictionAnswer {
+  id         String   @id
+  questionId String
+  userId     String
+  optionId   String
+  submittedAt DateTime
+  question   PredictionQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model CosmeticItem {
+  id               String   @id
+  name             String
+  description      String
+  category         String
+  rarity           String
+  themeToken       String
+  gameplayAffecting Boolean @default(false)
+  transferable     Boolean @default(false)
+  redeemable       Boolean @default(false)
+  resaleValue      Boolean @default(false)
+  unlocks          CosmeticUnlock[]
+}
+
+model CosmeticUnlock {
+  id         String   @id
+  userId     String
+  cosmeticId String
+  source     String
+  unlockedAt DateTime
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cosmetic   CosmeticItem @relation(fields: [cosmeticId], references: [id], onDelete: Cascade)
+}
+
+model XPTransaction {
+  id          String   @id
+  userId      String
+  source      String
+  amount      Int
+  description String
+  createdAt   DateTime
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
