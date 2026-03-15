@@ -1,8 +1,23 @@
 import { z } from "zod";
 
-export const authBootstrapSchema = z.object({
+const usernamePattern = /^[a-zA-Z0-9_]+$/;
+
+export const authRegisterSchema = z.object({
   email: z.string().email(),
-  name: z.string().trim().min(2).max(64)
+  name: z.string().trim().min(2).max(64),
+  password: z.string().min(8).max(72)
+});
+
+export const authLoginSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8).max(72)
+});
+
+export const authOnboardingSchema = z.object({
+  username: z.string().trim().min(3).max(24).regex(usernamePattern, {
+    message: "Username can only use letters, numbers, and underscores."
+  }),
+  favoriteTeamId: z.string().min(1)
 });
 
 export const createLeagueSchema = z.object({
@@ -73,7 +88,9 @@ export const settlePredictionSchema = z.object({
   correctOptionId: z.string().min(1)
 });
 
-export type AuthBootstrapInput = z.infer<typeof authBootstrapSchema>;
+export type AuthRegisterInput = z.infer<typeof authRegisterSchema>;
+export type AuthLoginInput = z.infer<typeof authLoginSchema>;
+export type AuthOnboardingInput = z.infer<typeof authOnboardingSchema>;
 export type CreateLeagueInput = z.infer<typeof createLeagueSchema>;
 export type JoinLeagueInput = z.infer<typeof joinLeagueSchema>;
 export type SubmitRosterInput = z.infer<typeof submitRosterSchema>;

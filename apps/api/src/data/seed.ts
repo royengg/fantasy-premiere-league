@@ -1,4 +1,5 @@
 import { defaultRosterRules } from "@fantasy-cricket/domain";
+import { hashPasswordSync } from "../lib/password.js";
 import type { AppStore } from "./store.js";
 
 const hoursFromNow = (hours: number) => new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
@@ -13,6 +14,18 @@ const defaultIplRules = {
 export function createSeedStore(): AppStore {
   return {
     sessions: [],
+    credentials: [
+      {
+        userId: "user-1",
+        passwordHash: hashPasswordSync("password123"),
+        updatedAt: hoursAgo(72)
+      },
+      {
+        userId: "user-2",
+        passwordHash: hashPasswordSync("password123"),
+        updatedAt: hoursAgo(48)
+      }
+    ],
     users: [
       {
         id: "user-1",
@@ -34,6 +47,7 @@ export function createSeedStore(): AppStore {
         xp: 180,
         level: 2,
         streak: 2,
+        onboardingCompleted: true,
         favoriteTeamId: "team-ben",
         equippedCosmetics: {
           "profile-theme": "cos-theme-saffron"
@@ -45,6 +59,7 @@ export function createSeedStore(): AppStore {
         xp: 110,
         level: 2,
         streak: 1,
+        onboardingCompleted: true,
         favoriteTeamId: "team-mum",
         equippedCosmetics: {}
       }

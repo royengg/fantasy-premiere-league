@@ -47,6 +47,7 @@ describe("inventory rules", () => {
       xp: 10,
       level: 1,
       streak: 0,
+      onboardingCompleted: true,
       equippedCosmetics: {}
     };
 
@@ -68,10 +69,10 @@ describe("inventory rules", () => {
       xp: 10,
       level: 1,
       streak: 0,
+      onboardingCompleted: true,
       equippedCosmetics: {}
     };
 
     expect(() => equipCosmetic(inventory, profile, item)).toThrow("Cosmetic is not unlocked.");
   });
 });
-

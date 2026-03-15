@@ -1,9 +1,10 @@
 import type {
-  AuthBootstrapResponse,
+  AuthResponse,
   BuildRosterInput,
   CosmeticItem,
   DashboardPayload,
   League,
+  Profile,
   PredictionAnswer,
   PredictionQuestion,
   Roster
@@ -45,16 +46,32 @@ async function request<T>(
     throw new Error(body.message ?? "Request failed.");
   }
 
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
   return response.json() as Promise<T>;
 }
 
 export function createApiClient({ baseUrl, getSessionToken, getAdminKey }: ApiClientOptions) {
   return {
-    bootstrap: (payload: { email: string; name: string }) =>
-      request<AuthBootstrapResponse>(baseUrl, "/api/auth/bootstrap", {
+    register: (payload: { email: string; name: string; password: string }) =>
+      request<AuthResponse>(baseUrl, "/api/auth/register", {
         method: "POST",
         body: JSON.stringify(payload)
       }),
+    login: (payload: { email: string; password: string }) =>
+      request<AuthResponse>(baseUrl, "/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      }),
+    logout: () =>
+      request<void>(baseUrl, "/api/auth/logout", { method: "POST" }, getSessionToken),
+    completeOnboarding: (payload: { username: string; favoriteTeamId: string }) =>
+      request<Profile>(baseUrl, "/api/auth/onboarding", {
+        method: "PATCH",
+        body: JSON.stringify(payload)
+      }, getSessionToken),
     getDashboard: () => request<DashboardPayload>(baseUrl, "/api/bootstrap", { method: "GET" }, getSessionToken),
     createLeague: (payload: { name: string; description?: string; visibility: "public" | "private" }) =>
       request<League>(baseUrl, "/api/leagues", { method: "POST", body: JSON.stringify(payload) }, getSessionToken),

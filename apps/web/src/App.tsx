@@ -14,6 +14,7 @@ import { LeagueView } from "./components/LeagueView";
 import { PredictionView } from "./components/PredictionView";
 import { LockerView } from "./components/LockerView";
 import { AuthScreen } from "./components/AuthScreen";
+import { OnboardingScreen } from "./components/OnboardingScreen";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 const STORAGE_KEY = "fantasy-cricket-session-token";
@@ -44,11 +45,18 @@ export function App() {
   const [sessionToken, setSessionToken] = useState<string | null>(() => getStoredSessionToken());
   const [screen, setScreen] = useState<Screen>("home");
   const [sessionNotice, setSessionNotice] = useState<string | null>(null);
-  
+
   const api = useMemo(
     () => createApiClient({ baseUrl: API_URL, getSessionToken: () => sessionToken }),
     [sessionToken]
   );
+
+  const handleAuthenticated = (token: string) => {
+    window.localStorage.setItem(STORAGE_KEY, token);
+    window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+    setSessionNotice(null);
+    setSessionToken(token);
+  };
 
   useEffect(() => {
     if (!sessionToken) return;
@@ -79,14 +87,28 @@ export function App() {
     queryClient.removeQueries({ queryKey: ["dashboard"] });
   }, [hasExpiredSession, queryClient]);
 
-  const bootstrapMutation = useMutation({
-    mutationFn: (payload: { name: string; email: string }) => api.bootstrap(payload),
+  const registerMutation = useMutation({
+    mutationFn: (payload: { name: string; email: string; password: string }) => api.register(payload),
     onSuccess: (session) => {
-      window.localStorage.setItem(STORAGE_KEY, session.token);
-      window.localStorage.removeItem(LEGACY_STORAGE_KEY);
-      setSessionNotice(null);
-      setSessionToken(session.token);
+      handleAuthenticated(session.token);
     }
+  });
+
+  const loginMutation = useMutation({
+    mutationFn: (payload: { email: string; password: string }) => api.login(payload),
+    onSuccess: (session) => {
+      handleAuthenticated(session.token);
+    }
+  });
+
+  const onboardingMutation = useMutation({
+    mutationFn: (payload: { username: string; favoriteTeamId: string }) =>
+      api.completeOnboarding(payload),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["dashboard"] })
+  });
+
+  const logoutMutation = useMutation({
+    mutationFn: () => api.logout()
   });
 
   const rosterMutation = useMutation({
@@ -117,9 +139,16 @@ export function App() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["dashboard"] })
   });
 
-  const handleLogout = () => {
-    localStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem(LEGACY_STORAGE_KEY);
+  const handleLogout = async () => {
+    try {
+      await logoutMutation.mutateAsync();
+    } catch {
+      // Local session state is still cleared even if the revoke request fails.
+    }
+
+    window.localStorage.removeItem(STORAGE_KEY);
+    window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+    queryClient.removeQueries({ queryKey: ["dashboard"] });
     setSessionToken(null);
   };
 
@@ -127,7 +156,8 @@ export function App() {
     return (
       <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
         <AuthScreen
-          onSubmit={(p: { name: string; email: string }) => bootstrapMutation.mutateAsync(p)}
+          onLogin={(payload) => loginMutation.mutateAsync(payload)}
+          onRegister={(payload) => registerMutation.mutateAsync(payload)}
           notice={sessionNotice}
         />
       </ThemeProvider>
@@ -163,6 +193,20 @@ export function App() {
             <button onClick={() => window.location.reload()} className="btn-secondary">Retry</button>
           </div>
         </div>
+      </ThemeProvider>
+    );
+  }
+
+  if (!dashboard.profile.onboardingCompleted) {
+    return (
+      <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
+        <OnboardingScreen
+          name={dashboard.user.name}
+          initialUsername={dashboard.profile.username}
+          initialFavoriteTeamId={dashboard.profile.favoriteTeamId}
+          teams={dashboard.teams}
+          onSubmit={(payload) => onboardingMutation.mutateAsync(payload)}
+        />
       </ThemeProvider>
     );
   }

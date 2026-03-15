@@ -32,7 +32,12 @@ class CricketDataService {
       return cached.data as T;
     }
 
-    const url = `${env.CRICKET_DATA_BASE_URL}${endpoint}?apikey=${env.CRICKET_DATA_API_KEY}`;
+    if (!env.CRICKET_DATA_API_KEY) {
+      throw new Error("CRICKET_DATA_API_KEY is not configured.");
+    }
+
+    const url = new URL(`${env.CRICKET_DATA_BASE_URL}${endpoint}`);
+    url.searchParams.set("apikey", env.CRICKET_DATA_API_KEY);
     
     const response = await fetch(url);
     

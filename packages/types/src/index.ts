@@ -33,11 +33,12 @@ export interface AuthSession {
   expiresAt: string;
 }
 
-export interface AuthBootstrapResponse {
+export interface AuthResponse {
   token: string;
   userId: ID;
   profileUsername: string;
   expiresAt: string;
+  onboardingCompleted: boolean;
 }
 
 export interface Profile {
@@ -48,6 +49,7 @@ export interface Profile {
   xp: number;
   level: number;
   streak: number;
+  onboardingCompleted: boolean;
   equippedCosmetics: Partial<Record<CosmeticCategory, ID>>;
 }
 

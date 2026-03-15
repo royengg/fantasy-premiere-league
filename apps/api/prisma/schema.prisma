@@ -12,6 +12,7 @@ model User {
   email        String             @unique
   name         String
   createdAt    DateTime           @default(now())
+  credential   AuthCredential?
   profile      Profile?
   inventory    UserInventory?
   sessions     Session[]
@@ -32,8 +33,16 @@ model Profile {
   xp                 Int     @default(0)
   level              Int     @default(1)
   streak             Int     @default(0)
+  onboardingCompleted Boolean @default(false)
   equippedCosmetics  Json
   user               User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AuthCredential {
+  userId       String   @id
+  passwordHash String
+  updatedAt    DateTime @updatedAt
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Session {

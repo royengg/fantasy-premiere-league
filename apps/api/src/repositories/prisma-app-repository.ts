@@ -22,7 +22,8 @@ import type {
   XPTransaction
 } from "@fantasy-cricket/types";
 
-import type { AppStore } from "../data/store.js";
+import type { AppStore, AuthCredential } from "../data/store.js";
+import { hashPasswordSync } from "../lib/password.js";
 import { prisma } from "../lib/prisma.js";
 import { Prisma, type PrismaClient } from "../generated/prisma/client";
 import type { AppRepository } from "./app-repository.js";
@@ -61,6 +62,16 @@ function mapSessions(rows: Array<{ token: string; userId: string; createdAt: Dat
   }));
 }
 
+function mapCredentials(
+  rows: Array<{ userId: string; passwordHash: string; updatedAt: Date }>
+): AuthCredential[] {
+  return rows.map((row) => ({
+    userId: row.userId,
+    passwordHash: row.passwordHash,
+    updatedAt: row.updatedAt.toISOString()
+  }));
+}
+
 function mapUsers(rows: Array<{ id: string; email: string; name: string; createdAt: Date }>): User[] {
   return rows.map((row) => ({
     id: row.id,
@@ -70,7 +81,7 @@ function mapUsers(rows: Array<{ id: string; email: string; name: string; created
   }));
 }
 
-function mapProfiles(rows: Array<{ userId: string; username: string; bio: string | null; favoriteTeamId: string | null; xp: number; level: number; streak: number; equippedCosmetics: Prisma.JsonValue }>): Profile[] {
+function mapProfiles(rows: Array<{ userId: string; username: string; bio: string | null; favoriteTeamId: string | null; xp: number; level: number; streak: number; onboardingCompleted: boolean; equippedCosmetics: Prisma.JsonValue }>): Profile[] {
   return rows.map((row) => ({
     userId: row.userId,
     username: row.username,
@@ -79,6 +90,7 @@ function mapProfiles(rows: Array<{ userId: string; username: string; bio: string
     xp: row.xp,
     level: row.level,
     streak: row.streak,
+    onboardingCompleted: row.onboardingCompleted,
     equippedCosmetics: asJson<Profile["equippedCosmetics"]>(row.equippedCosmetics)
   }));
 }
@@ -307,12 +319,44 @@ export class PrismaAppRepository implements AppRepository {
     const userCount = await this.client.user.count();
     if (userCount === 0) {
       await this.replaceStore(seedStore);
+      return;
+    }
+
+    const store = await this.loadStore();
+    let changed = false;
+
+    const credentialUserIds = new Set(store.credentials.map((credential) => credential.userId));
+    for (const user of store.users) {
+      if (credentialUserIds.has(user.id)) {
+        continue;
+      }
+
+      store.credentials.push({
+        userId: user.id,
+        passwordHash: hashPasswordSync("password123"),
+        updatedAt: new Date().toISOString()
+      });
+      changed = true;
+    }
+
+    for (const profile of store.profiles) {
+      if (profile.onboardingCompleted || !profile.username || !profile.favoriteTeamId) {
+        continue;
+      }
+
+      profile.onboardingCompleted = true;
+      changed = true;
+    }
+
+    if (changed) {
+      await this.replaceStore(store);
     }
   }
 
   async loadStore(): Promise<AppStore> {
     const [
       sessions,
+      credentials,
       users,
       profiles,
       friendships,
@@ -336,6 +380,7 @@ export class PrismaAppRepository implements AppRepository {
       provider
     ] = await Promise.all([
       this.client.session.findMany(),
+      this.client.authCredential.findMany(),
       this.client.user.findMany(),
       this.client.profile.findMany(),
       this.client.friendship.findMany(),
@@ -361,6 +406,7 @@ export class PrismaAppRepository implements AppRepository {
 
     return {
       sessions: mapSessions(sessions),
+      credentials: mapCredentials(credentials),
       users: mapUsers(users),
       profiles: mapProfiles(profiles),
       friendships: mapFriendships(friendships),
@@ -396,6 +442,7 @@ export class PrismaAppRepository implements AppRepository {
   async replaceStore(store: AppStore): Promise<void> {
     await this.client.$transaction(async (tx) => {
       await tx.session.deleteMany();
+      await tx.authCredential.deleteMany();
       await tx.predictionAnswer.deleteMany();
       await tx.predictionResult.deleteMany();
       await tx.leaderboardEntry.deleteMany();
@@ -429,6 +476,16 @@ export class PrismaAppRepository implements AppRepository {
         });
       }
 
+      if (store.credentials.length) {
+        await tx.authCredential.createMany({
+          data: store.credentials.map((credential) => ({
+            userId: credential.userId,
+            passwordHash: credential.passwordHash,
+            updatedAt: new Date(credential.updatedAt)
+          }))
+        });
+      }
+
       if (store.profiles.length) {
         await tx.profile.createMany({
           data: store.profiles.map((profile) => ({
@@ -439,6 +496,7 @@ export class PrismaAppRepository implements AppRepository {
             xp: profile.xp,
             level: profile.level,
             streak: profile.streak,
+            onboardingCompleted: profile.onboardingCompleted,
             equippedCosmetics: inputJson(profile.equippedCosmetics)
           }))
         });

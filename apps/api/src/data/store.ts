@@ -22,6 +22,12 @@ import type {
   XPTransaction
 } from "@fantasy-cricket/types";
 
+export interface AuthCredential {
+  userId: string;
+  passwordHash: string;
+  updatedAt: string;
+}
+
 export interface ProviderSyncState {
   status: "idle" | "syncing" | "ready";
   syncedAt: string;
@@ -29,6 +35,7 @@ export interface ProviderSyncState {
 
 export interface AppStore {
   sessions: AuthSession[];
+  credentials: AuthCredential[];
   users: User[];
   profiles: Profile[];
   friendships: Friendship[];

@@ -1,14 +1,20 @@
 import { useState } from "react";
-import { Shield, Users, Trophy } from "lucide-react";
+import { Shield, Trophy, Users } from "lucide-react";
+
+type AuthMode = "login" | "register";
 
 interface AuthScreenProps {
-  onSubmit: (payload: { name: string; email: string }) => Promise<unknown>;
+  onLogin: (payload: { email: string; password: string }) => Promise<unknown>;
+  onRegister: (payload: { name: string; email: string; password: string }) => Promise<unknown>;
   notice?: string | null;
 }
 
-export function AuthScreen({ onSubmit, notice }: AuthScreenProps) {
-  const [name, setName] = useState("Aisha Singh");
+export function AuthScreen({ onLogin, onRegister, notice }: AuthScreenProps) {
+  const [mode, setMode] = useState<AuthMode>("login");
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("captain@cricketclub.test");
+  const [password, setPassword] = useState("password123");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -16,10 +22,19 @@ export function AuthScreen({ onSubmit, notice }: AuthScreenProps) {
     e.preventDefault();
     setLoading(true);
     setError(null);
+
     try {
-      await onSubmit({ name, email });
+      if (mode === "register") {
+        if (password !== confirmPassword) {
+          throw new Error("Passwords do not match.");
+        }
+
+        await onRegister({ name, email, password });
+      } else {
+        await onLogin({ email, password });
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to sign in");
+      setError(err instanceof Error ? err.message : "Authentication failed.");
     } finally {
       setLoading(false);
     }
@@ -35,16 +50,16 @@ export function AuthScreen({ onSubmit, notice }: AuthScreenProps) {
             </div>
             <span className="text-2xl font-black">Fantasy Premier League</span>
           </div>
-          
+
           <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight mb-4 leading-tight">
             IPL Fantasy.<br />
             <span className="text-accent">Play for Glory.</span>
           </h1>
-          
+
           <p className="text-text-muted text-lg mb-8 max-w-md mx-auto lg:mx-0">
             Build your dream XI, compete with friends, and unlock exclusive cosmetics. Play-money only.
           </p>
-          
+
           <div className="grid grid-cols-3 gap-4 max-w-sm mx-auto lg:mx-0">
             <div className="stat-block text-center">
               <Users className="w-5 h-5 text-accent mx-auto mb-2" />
@@ -64,10 +79,51 @@ export function AuthScreen({ onSubmit, notice }: AuthScreenProps) {
           </div>
         </div>
 
-        <div className="card p-8 max-w-md mx-auto w-full" style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg width='40' height='40' viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M20 0L40 20L20 40L0 20z' fill='%2322c55e' fill-opacity='0.02'/%3E%3C/svg%3E\")" }}>
-          <h2 className="text-2xl font-bold mb-1">Welcome Back</h2>
-          <p className="text-text-muted text-sm mb-6">Enter your details to continue</p>
-          
+        <div
+          className="card p-8 max-w-md mx-auto w-full"
+          style={{
+            backgroundImage:
+              "url(\"data:image/svg+xml,%3Csvg width='40' height='40' viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M20 0L40 20L20 40L0 20z' fill='%2322c55e' fill-opacity='0.02'/%3E%3C/svg%3E\")"
+          }}
+        >
+          <div className="mb-6">
+            <div className="inline-flex p-1 rounded-xl bg-surface-elevated border border-border w-full">
+              <button
+                type="button"
+                onClick={() => {
+                  setMode("login");
+                  setError(null);
+                }}
+                className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${
+                  mode === "login" ? "bg-accent text-surface" : "text-text-muted hover:text-text"
+                }`}
+              >
+                Sign In
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMode("register");
+                  setError(null);
+                }}
+                className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${
+                  mode === "register" ? "bg-accent text-surface" : "text-text-muted hover:text-text"
+                }`}
+              >
+                Create Account
+              </button>
+            </div>
+          </div>
+
+          <h2 className="text-2xl font-bold mb-1">
+            {mode === "login" ? "Welcome Back" : "Create Your Account"}
+          </h2>
+          <p className="text-text-muted text-sm mb-6">
+            {mode === "login"
+              ? "Sign in with your email and password."
+              : "Register, then complete your profile setup."}
+          </p>
+
           {notice && (
             <div className="mb-4 p-3 rounded-xl bg-accent/10 border border-accent/20 text-accent text-sm">
               {notice}
@@ -75,42 +131,82 @@ export function AuthScreen({ onSubmit, notice }: AuthScreenProps) {
           )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
+            {mode === "register" ? (
+              <div>
+                <label className="text-xs font-semibold text-text-muted uppercase tracking-wider">
+                  Name
+                </label>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="w-full mt-1.5 h-12 px-4 bg-surface border border-border rounded-xl text-text placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors"
+                  placeholder="Aisha Singh"
+                  required
+                />
+              </div>
+            ) : null}
+
             <div>
-              <label className="text-xs font-semibold text-text-muted uppercase tracking-wider">Name</label>
-              <input
-                type="text"
-                value={name}
-                onChange={e => setName(e.target.value)}
-                className="w-full mt-1.5 h-12 px-4 bg-surface border border-border rounded-xl text-text placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors"
-                required
-              />
-            </div>
-            
-            <div>
-              <label className="text-xs font-semibold text-text-muted uppercase tracking-wider">Email</label>
+              <label className="text-xs font-semibold text-text-muted uppercase tracking-wider">
+                Email
+              </label>
               <input
                 type="email"
                 value={email}
-                onChange={e => setEmail(e.target.value)}
+                onChange={(e) => setEmail(e.target.value)}
                 className="w-full mt-1.5 h-12 px-4 bg-surface border border-border rounded-xl text-text placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors"
+                placeholder="captain@cricketclub.test"
                 required
               />
             </div>
-            
-            {error && (
+
+            <div>
+              <label className="text-xs font-semibold text-text-muted uppercase tracking-wider">
+                Password
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full mt-1.5 h-12 px-4 bg-surface border border-border rounded-xl text-text placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors"
+                placeholder="Minimum 8 characters"
+                required
+              />
+            </div>
+
+            {mode === "register" ? (
+              <div>
+                <label className="text-xs font-semibold text-text-muted uppercase tracking-wider">
+                  Confirm Password
+                </label>
+                <input
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  className="w-full mt-1.5 h-12 px-4 bg-surface border border-border rounded-xl text-text placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors"
+                  placeholder="Repeat your password"
+                  required
+                />
+              </div>
+            ) : null}
+
+            {error ? (
               <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
                 {error}
               </div>
-            )}
-            
+            ) : null}
+
             <button type="submit" disabled={loading} className="btn-primary w-full mt-2">
               {loading ? (
                 <span className="flex items-center justify-center gap-2">
                   <span className="w-4 h-4 border-2 border-surface/30 border-t-surface rounded-full animate-spin" />
-                  Signing in...
+                  {mode === "login" ? "Signing in..." : "Creating account..."}
                 </span>
+              ) : mode === "login" ? (
+                "Sign In"
               ) : (
-                "Enter"
+                "Create Account"
               )}
             </button>
           </form>

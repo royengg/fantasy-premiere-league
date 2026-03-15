@@ -38,9 +38,20 @@ import type {
 
 import type { AppStore } from "../data/store.js";
 import type { AppRepository } from "../repositories/app-repository.js";
+import {
+  buildProviderSyncSnapshot,
+  isProviderManagedId,
+  providerSyncResult,
+  type ProviderSyncGateway,
+  type ProviderSyncResult
+} from "./provider-sync-service.js";
+import { cricketDataService } from "./cricket-data-service.js";
 
 export class GameService {
-  constructor(private readonly repository: AppRepository) {}
+  constructor(
+    private readonly repository: AppRepository,
+    private readonly providerGateway: ProviderSyncGateway = cricketDataService
+  ) {}
 
   async initialize(): Promise<void> {
     const store = await this.repository.loadStore();
@@ -52,25 +63,46 @@ export class GameService {
     return this.read((store) => {
       const user = this.getUser(store, userId);
       const inventory = this.getInventoryRecord(store, userId);
+      const contests = this.visibleContestsForUser(store, userId);
+      const contestIds = new Set(contests.map((contest) => contest.id));
+      const questions = this.visibleQuestions(store);
+      const questionIds = new Set(questions.map((question) => question.id));
+      const leagues = store.leagues.filter(
+        (league) => league.visibility === "public" || league.memberIds.includes(userId)
+      );
+      const matchIds = new Set([
+        ...contests.map((contest) => contest.matchId),
+        ...questions.map((question) => question.matchId)
+      ]);
+      const matches = store.matches.filter((match) => matchIds.has(match.id));
+      const teamIds = new Set(
+        matches.flatMap((match) => [match.homeTeamId, match.awayTeamId])
+      );
+      const teams = store.teams.filter((team) => teamIds.has(team.id));
+      const players = store.players.filter((player) => teamIds.has(player.teamId));
 
       return {
         user,
         profile: this.getProfile(store, userId),
-        contests: store.contests,
-        leagues: store.leagues.filter(
-          (league) => league.visibility === "public" || league.memberIds.includes(userId)
-        ),
-        matches: store.matches,
-        teams: store.teams,
-        players: store.players,
-        playerStats: this.generatePlayerStats(store),
+        contests,
+        leagues,
+        matches,
+        teams,
+        players,
+        playerStats: this.generatePlayerStats(players),
         rosters: store.rosters.filter(
-          (roster) => roster.userId === userId || this.isPublicContest(store, roster.contestId)
+          (roster) =>
+            contestIds.has(roster.contestId) &&
+            (roster.userId === userId || this.isPublicContest(store, roster.contestId))
         ),
-        leaderboard: store.leaderboard,
-        questions: store.questions,
-        answers: store.answers.filter((answer) => answer.userId === userId),
-        results: store.results.filter((result) => result.userId === userId),
+        leaderboard: store.leaderboard.filter((entry) => contestIds.has(entry.contestId)),
+        questions,
+        answers: store.answers.filter(
+          (answer) => answer.userId === userId && questionIds.has(answer.questionId)
+        ),
+        results: store.results.filter(
+          (result) => result.userId === userId && questionIds.has(result.questionId)
+        ),
         inventory,
         cosmetics: store.cosmetics,
         badges: store.badges,
@@ -319,14 +351,44 @@ export class GameService {
     });
   }
 
-  async syncProvider(): Promise<{ status: string; syncedAt: string }> {
-    return this.write((store) => {
+  async syncProvider(): Promise<ProviderSyncResult> {
+    return this.writeAsync(async (store) => {
+      const snapshot = await buildProviderSyncSnapshot(this.providerGateway);
+
+      store.teams = [
+        ...store.teams.filter((team) => !isProviderManagedId(team.id)),
+        ...snapshot.teams
+      ];
+      store.players = [
+        ...store.players.filter((player) => !isProviderManagedId(player.id)),
+        ...snapshot.players
+      ];
+      store.matches = [
+        ...store.matches.filter((match) => !isProviderManagedId(match.id)),
+        ...snapshot.matches
+      ];
+      store.contests = [
+        ...store.contests.filter((contest) => !isProviderManagedId(contest.id)),
+        ...snapshot.contests
+      ];
+      store.questions = [
+        ...store.questions.filter((question) => !isProviderManagedId(question.id)),
+        ...snapshot.questions
+      ];
+      store.scoreEvents = [
+        ...store.scoreEvents.filter((event) => !isProviderManagedId(event.id)),
+        ...snapshot.scoreEvents
+      ];
+
+      this.pruneProviderData(store);
+      this.recomputeAllLeaderboards(store);
+
       store.provider = {
         status: "ready",
-        syncedAt: new Date().toISOString()
+        syncedAt: snapshot.syncedAt
       };
 
-      return store.provider;
+      return providerSyncResult(snapshot);
     });
   }
 
@@ -379,6 +441,13 @@ export class GameService {
     return result;
   }
 
+  private async writeAsync<T>(writer: (store: AppStore) => Promise<T> | T): Promise<T> {
+    const store = await this.repository.loadStore();
+    const result = await writer(store);
+    await this.repository.replaceStore(store);
+    return result;
+  }
+
   private getUser(store: AppStore, userId: string): User {
     const user = store.users.find((entry) => entry.id === userId);
     if (!user) {
@@ -406,8 +475,8 @@ export class GameService {
     return inventory;
   }
 
-  private generatePlayerStats(store: AppStore): PlayerStats[] {
-    return store.players.map((player) => ({
+  private generatePlayerStats(players: Player[]): PlayerStats[] {
+    return players.map((player) => ({
       playerId: player.id,
       lastFiveMatches: [
         Math.floor(Math.random() * 50) + 5,
@@ -503,6 +572,69 @@ export class GameService {
 
   private isPublicContest(store: AppStore, contestId: string): boolean {
     return store.contests.some((contest) => contest.id === contestId && contest.kind === "public");
+  }
+
+  private visibleContestsForUser(store: AppStore, userId: string): Contest[] {
+    const preferredPublicContests = store.contests.some(
+      (contest) => contest.kind === "public" && isProviderManagedId(contest.id)
+    )
+      ? store.contests.filter(
+          (contest) => contest.kind === "public" && isProviderManagedId(contest.id)
+        )
+      : store.contests.filter(
+          (contest) => contest.kind === "public" && !isProviderManagedId(contest.id)
+        );
+
+    const privateContestIds = new Set(
+      store.leagues
+        .filter((league) => league.visibility === "public" || league.memberIds.includes(userId))
+        .flatMap((league) => league.contestIds)
+    );
+
+    const visiblePrivateContests = store.contests.filter(
+      (contest) => contest.kind === "private" && privateContestIds.has(contest.id)
+    );
+
+    return [...preferredPublicContests, ...visiblePrivateContests];
+  }
+
+  private visibleQuestions(store: AppStore): PredictionQuestion[] {
+    const providerQuestions = store.questions.filter((question) =>
+      isProviderManagedId(question.id)
+    );
+
+    return providerQuestions.length > 0
+      ? providerQuestions
+      : store.questions.filter((question) => !isProviderManagedId(question.id));
+  }
+
+  private pruneProviderData(store: AppStore) {
+    const playerIds = new Set(store.players.map((player) => player.id));
+    const contestIds = new Set(store.contests.map((contest) => contest.id));
+    const questionIds = new Set(store.questions.map((question) => question.id));
+
+    store.rosters = store.rosters.filter((roster) => {
+      if (!isProviderManagedId(roster.contestId)) {
+        return true;
+      }
+
+      return (
+        contestIds.has(roster.contestId) &&
+        roster.players.every((player) => playerIds.has(player.playerId)) &&
+        playerIds.has(roster.captainPlayerId) &&
+        playerIds.has(roster.viceCaptainPlayerId)
+      );
+    });
+
+    store.leaderboard = store.leaderboard.filter(
+      (entry) => !isProviderManagedId(entry.contestId) || contestIds.has(entry.contestId)
+    );
+    store.answers = store.answers.filter(
+      (answer) => !isProviderManagedId(answer.questionId) || questionIds.has(answer.questionId)
+    );
+    store.results = store.results.filter(
+      (result) => !isProviderManagedId(result.questionId) || questionIds.has(result.questionId)
+    );
   }
 
   private recomputeAllLeaderboards(store: AppStore) {
