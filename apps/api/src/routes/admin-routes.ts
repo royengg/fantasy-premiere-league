@@ -1,13 +1,20 @@
 import { Router, type Router as ExpressRouter } from "express";
 
-import { adminCorrectionSchema } from "@fantasy-cricket/validators";
+import { adminCorrectionSchema, settlePredictionSchema } from "@fantasy-cricket/validators";
 
-import { sendError, type ApiDependencies } from "../lib/http.js";
+import { assertAdminKey, sendError, type ApiDependencies } from "../lib/http.js";
 
-export function createAdminRouter({ adminService }: ApiDependencies): ExpressRouter {
+export function createAdminRouter({ adminService, env, gameService, realtime }: ApiDependencies): ExpressRouter {
   const router = Router();
 
-  router.post("/provider-sync", async (_req, res) => {
+  router.post("/provider-sync", async (req, res) => {
+    try {
+      assertAdminKey(req, env);
+    } catch (error) {
+      sendError(res, 403, error, "Provider sync failed.");
+      return;
+    }
+
     try {
       res.json(await adminService.syncProvider());
     } catch (error) {
@@ -23,9 +30,44 @@ export function createAdminRouter({ adminService }: ApiDependencies): ExpressRou
     }
 
     try {
-      res.json(await adminService.applyCorrection(req.params.matchId, parsed.data));
+      assertAdminKey(req, env);
+    } catch (error) {
+      sendError(res, 403, error, "Correction failed.");
+      return;
+    }
+
+    try {
+      const result = await adminService.applyCorrection(req.params.matchId, parsed.data);
+      realtime.emitUserRefresh(
+        await gameService.matchSubscriberIds(req.params.matchId),
+        "score-correction"
+      );
+      res.json(result);
     } catch (error) {
       sendError(res, 400, error, "Correction failed.");
+    }
+  });
+
+  router.post("/predictions/:questionId/settle", async (req, res) => {
+    const parsed = settlePredictionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid settlement." });
+      return;
+    }
+
+    try {
+      assertAdminKey(req, env);
+    } catch (error) {
+      sendError(res, 403, error, "Settlement failed.");
+      return;
+    }
+
+    try {
+      const result = await adminService.settlePrediction(req.params.questionId, parsed.data);
+      realtime.emitUserRefresh(await gameService.allUserIds(), "prediction-settled");
+      res.json(result);
+    } catch (error) {
+      sendError(res, 400, error, "Settlement failed.");
     }
   });
 

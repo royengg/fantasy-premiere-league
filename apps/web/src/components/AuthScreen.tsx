@@ -3,9 +3,10 @@ import { Shield, Users, Trophy } from "lucide-react";
 
 interface AuthScreenProps {
   onSubmit: (payload: { name: string; email: string }) => Promise<unknown>;
+  notice?: string | null;
 }
 
-export function AuthScreen({ onSubmit }: AuthScreenProps) {
+export function AuthScreen({ onSubmit, notice }: AuthScreenProps) {
   const [name, setName] = useState("Aisha Singh");
   const [email, setEmail] = useState("captain@cricketclub.test");
   const [loading, setLoading] = useState(false);
@@ -67,6 +68,12 @@ export function AuthScreen({ onSubmit }: AuthScreenProps) {
           <h2 className="text-2xl font-bold mb-1">Welcome Back</h2>
           <p className="text-text-muted text-sm mb-6">Enter your details to continue</p>
           
+          {notice && (
+            <div className="mb-4 p-3 rounded-xl bg-accent/10 border border-accent/20 text-accent text-sm">
+              {notice}
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="text-xs font-semibold text-text-muted uppercase tracking-wider">Name</label>

@@ -5,13 +5,14 @@ const hoursFromNow = (hours: number) => new Date(Date.now() + hours * 60 * 60 * 
 const hoursAgo = (hours: number) => new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
 
 const defaultIplRules = {
-  maxPlayersPerTeam: 4 as const,
+  maxPlayersPerTeam: 7 as const,
   allowImpactPlayer: true,
   uncappedBonusPoints: 10
 };
 
 export function createSeedStore(): AppStore {
   return {
+    sessions: [],
     users: [
       {
         id: "user-1",

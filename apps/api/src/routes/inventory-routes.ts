@@ -2,14 +2,22 @@ import { Router, type Router as ExpressRouter } from "express";
 
 import { equipCosmeticSchema } from "@fantasy-cricket/validators";
 
-import { currentUserId, sendError, type ApiDependencies } from "../lib/http.js";
+import { authenticatedUserId, sendError, type ApiDependencies } from "../lib/http.js";
 
-export function createInventoryRouter({ gameService }: ApiDependencies): ExpressRouter {
+export function createInventoryRouter({ authService, gameService }: ApiDependencies): ExpressRouter {
   const router = Router();
 
-  router.get("/", (req, res) => {
+  router.get("/", async (req, res) => {
+    let userId: string;
     try {
-      const inventory = gameService.getInventory(currentUserId(req));
+      userId = await authenticatedUserId(req, authService);
+    } catch (error) {
+      sendError(res, 401, error, "Inventory not found.");
+      return;
+    }
+
+    try {
+      const inventory = await gameService.getInventory(userId);
       res.json({
         cosmetics: inventory.cosmetics,
         equipped: inventory.inventory.equipped
@@ -19,15 +27,23 @@ export function createInventoryRouter({ gameService }: ApiDependencies): Express
     }
   });
 
-  router.post("/equip", (req, res) => {
+  router.post("/equip", async (req, res) => {
     const parsed = equipCosmeticSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid cosmetic." });
       return;
     }
 
+    let userId: string;
     try {
-      res.json(gameService.equipUserCosmetic(currentUserId(req), parsed.data.cosmeticId));
+      userId = await authenticatedUserId(req, authService);
+    } catch (error) {
+      sendError(res, 401, error, "Equip failed.");
+      return;
+    }
+
+    try {
+      res.json(await gameService.equipUserCosmetic(userId, parsed.data.cosmeticId));
     } catch (error) {
       sendError(res, 400, error, "Equip failed.");
     }

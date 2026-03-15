@@ -1,4 +1,5 @@
 import type {
+  AuthSession,
   Badge,
   Contest,
   CosmeticItem,
@@ -27,6 +28,7 @@ export interface ProviderSyncState {
 }
 
 export interface AppStore {
+  sessions: AuthSession[];
   users: User[];
   profiles: Profile[];
   friendships: Friendship[];
@@ -49,4 +51,3 @@ export interface AppStore {
   xpTransactions: XPTransaction[];
   provider: ProviderSyncState;
 }
-

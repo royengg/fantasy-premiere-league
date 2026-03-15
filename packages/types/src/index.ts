@@ -26,6 +26,20 @@ export interface User {
   createdAt: string;
 }
 
+export interface AuthSession {
+  token: string;
+  userId: ID;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface AuthBootstrapResponse {
+  token: string;
+  userId: ID;
+  profileUsername: string;
+  expiresAt: string;
+}
+
 export interface Profile {
   userId: ID;
   username: string;
@@ -131,7 +145,7 @@ export interface RosterRules {
 }
 
 export interface IPLRules {
-  maxPlayersPerTeam: 4;
+  maxPlayersPerTeam: 7;
   allowImpactPlayer: boolean;
   uncappedBonusPoints: number;
 }

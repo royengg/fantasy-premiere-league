@@ -5,17 +5,17 @@ import { calculateRosterPoints } from "@fantasy-cricket/scoring";
 import type { Contest, FantasyScoreEvent, Match, Player, Roster } from "@fantasy-cricket/types";
 
 const players: Player[] = [
-  { id: "wk1", name: "Keeper One", teamId: "t1", role: "WK", credits: 8.5, rating: 80 },
-  { id: "bat1", name: "Batter One", teamId: "t1", role: "BAT", credits: 9, rating: 80 },
-  { id: "bat2", name: "Batter Two", teamId: "t1", role: "BAT", credits: 8.5, rating: 80 },
-  { id: "bat3", name: "Batter Three", teamId: "t1", role: "BAT", credits: 8, rating: 80 },
-  { id: "ar1", name: "All Rounder One", teamId: "t1", role: "AR", credits: 9, rating: 80 },
-  { id: "ar2", name: "All Rounder Two", teamId: "t2", role: "AR", credits: 8.5, rating: 80 },
-  { id: "bowl1", name: "Bowler One", teamId: "t2", role: "BOWL", credits: 8.5, rating: 80 },
-  { id: "bowl2", name: "Bowler Two", teamId: "t2", role: "BOWL", credits: 8, rating: 80 },
-  { id: "bowl3", name: "Bowler Three", teamId: "t2", role: "BOWL", credits: 7.5, rating: 80 },
-  { id: "bat4", name: "Batter Four", teamId: "t2", role: "BAT", credits: 7.5, rating: 80 },
-  { id: "wk2", name: "Keeper Two", teamId: "t2", role: "WK", credits: 7.5, rating: 80 }
+  { id: "wk1", name: "Keeper One", teamId: "t1", role: "WK", credits: 8.5, rating: 80, nationality: "overseas", selectionPercent: 45 },
+  { id: "bat1", name: "Batter One", teamId: "t1", role: "BAT", credits: 9, rating: 80, nationality: "indian-capped", selectionPercent: 61 },
+  { id: "bat2", name: "Batter Two", teamId: "t1", role: "BAT", credits: 8.5, rating: 80, nationality: "indian-capped", selectionPercent: 34 },
+  { id: "bat3", name: "Batter Three", teamId: "t1", role: "BAT", credits: 8, rating: 80, nationality: "indian-capped", selectionPercent: 29 },
+  { id: "ar1", name: "All Rounder One", teamId: "t1", role: "AR", credits: 9, rating: 80, nationality: "indian-capped", selectionPercent: 52 },
+  { id: "ar2", name: "All Rounder Two", teamId: "t2", role: "AR", credits: 8.5, rating: 80, nationality: "indian-uncapped", selectionPercent: 18 },
+  { id: "bowl1", name: "Bowler One", teamId: "t2", role: "BOWL", credits: 8.5, rating: 80, nationality: "indian-capped", selectionPercent: 48 },
+  { id: "bowl2", name: "Bowler Two", teamId: "t2", role: "BOWL", credits: 8, rating: 80, nationality: "indian-capped", selectionPercent: 26 },
+  { id: "bowl3", name: "Bowler Three", teamId: "t2", role: "BOWL", credits: 7.5, rating: 80, nationality: "overseas", selectionPercent: 21 },
+  { id: "bat4", name: "Batter Four", teamId: "t2", role: "BAT", credits: 7.5, rating: 80, nationality: "indian-capped", selectionPercent: 17 },
+  { id: "wk2", name: "Keeper Two", teamId: "t2", role: "WK", credits: 7.5, rating: 80, nationality: "indian-capped", selectionPercent: 22 }
 ];
 
 const contest: Contest = {
@@ -25,6 +25,11 @@ const contest: Contest = {
   matchId: "match-1",
   salaryCap: 100,
   rosterRules: defaultRosterRules,
+  iplRules: {
+    maxPlayersPerTeam: 7,
+    allowImpactPlayer: true,
+    uncappedBonusPoints: 4
+  },
   lockTime: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
   rewards: []
 };
@@ -85,7 +90,8 @@ describe("fantasy scoring", () => {
       viceCaptainPlayerId: "bowl1",
       totalCredits: 90,
       submittedAt: new Date().toISOString(),
-      locked: false
+      locked: false,
+      hasUncappedPlayer: true
     };
 
     const events: FantasyScoreEvent[] = [
@@ -99,4 +105,3 @@ describe("fantasy scoring", () => {
     expect(score.breakdown.find((entry) => entry.playerId === "bowl1")?.finalPoints).toBe(15);
   });
 });
-

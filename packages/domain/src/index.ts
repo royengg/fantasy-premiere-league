@@ -28,7 +28,7 @@ export const defaultRosterRules: RosterRules = {
     AR: 4,
     BOWL: 5
   },
-  maxPerTeam: 4
+  maxPerTeam: 7
 };
 
 export function validateRoster(

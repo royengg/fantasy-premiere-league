@@ -1,6 +1,7 @@
 import cors from "cors";
 import express, { type Express } from "express";
 
+import { createCorsOptions } from "./lib/cors.js";
 import { type ApiDependencies } from "./lib/http.js";
 import { createAdminRouter } from "./routes/admin-routes.js";
 import { createAuthRouter } from "./routes/auth-routes.js";
@@ -13,7 +14,7 @@ import { createLeagueRouter } from "./routes/league-routes.js";
 import { createPredictionRouter } from "./routes/prediction-routes.js";
 
 export function configureApp(app: Express, dependencies: ApiDependencies): void {
-  app.use(cors({ origin: dependencies.env.CORS_ORIGIN }));
+  app.use(cors(createCorsOptions(dependencies.env.CORS_ALLOWED_ORIGINS)));
   app.use(express.json());
 
   app.use("/api", createHealthRouter(dependencies));

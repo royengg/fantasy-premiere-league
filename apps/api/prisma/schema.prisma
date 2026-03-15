@@ -8,15 +8,18 @@ datasource db {
 }
 
 model User {
-  id           String            @id
-  email        String            @unique
+  id           String             @id
+  email        String             @unique
   name         String
-  createdAt    DateTime          @default(now())
+  createdAt    DateTime           @default(now())
   profile      Profile?
+  inventory    UserInventory?
+  sessions     Session[]
   rosters      Roster[]
-  friendshipsA Friendship[]      @relation("FriendshipRequester")
-  friendshipsB Friendship[]      @relation("FriendshipAddressee")
+  friendshipsA Friendship[]       @relation("FriendshipRequester")
+  friendshipsB Friendship[]       @relation("FriendshipAddressee")
   answers      PredictionAnswer[]
+  results      PredictionResult[]
   xpLedger     XPTransaction[]
   unlocks      CosmeticUnlock[]
 }
@@ -29,12 +32,19 @@ model Profile {
   xp                 Int     @default(0)
   level              Int     @default(1)
   streak             Int     @default(0)
-  equippedProfile    String?
-  equippedFrame      String?
-  equippedLeague     String?
-  equippedCard       String?
-  equippedTitle      String?
+  equippedCosmetics  Json
   user               User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Session {
+  token      String   @id
+  userId     String
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model Friendship {
@@ -47,6 +57,15 @@ model Friendship {
   addressee   User     @relation("FriendshipAddressee", fields: [addresseeId], references: [id], onDelete: Cascade)
 }
 
+model Invite {
+  id         String   @id
+  leagueId   String
+  code       String   @unique
+  createdBy  String
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime?
+}
+
 model Team {
   id        String   @id
   name      String
@@ -56,13 +75,15 @@ model Team {
 }
 
 model Player {
-  id      String @id
-  name    String
-  teamId  String
-  role    String
-  credits Float
-  rating  Float
-  team    Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  id               String  @id
+  name             String
+  teamId           String
+  role             String
+  credits          Float
+  rating           Float
+  nationality      String
+  selectionPercent Float
+  team             Team    @relation(fields: [teamId], references: [id], onDelete: Cascade)
 }
 
 model Match {
@@ -75,13 +96,16 @@ model Match {
 }
 
 model Contest {
-  id         String   @id
-  name       String
-  kind       String
-  matchId    String
-  leagueId   String?
-  salaryCap  Float
-  lockTime   DateTime
+  id          String   @id
+  name        String
+  kind        String
+  matchId     String
+  leagueId    String?
+  salaryCap   Float
+  rosterRules Json
+  iplRules    Json
+  lockTime    DateTime
+  rewards     Json
 }
 
 model League {
@@ -91,26 +115,60 @@ model League {
   visibility  String
   createdBy   String
   inviteCode  String   @unique
+  memberIds   String[]
+  contestIds  String[]
   bannerStyle String
 }
 
 model Roster {
-  id                String   @id
-  contestId         String
-  userId            String
-  captainPlayerId   String
+  id                  String   @id
+  contestId           String
+  userId              String
+  players             Json
+  captainPlayerId     String
   viceCaptainPlayerId String
-  totalCredits      Float
-  submittedAt       DateTime
-  locked            Boolean
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  impactPlayerId      String?
+  totalCredits        Float
+  submittedAt         DateTime
+  locked              Boolean
+  hasUncappedPlayer   Boolean
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([contestId, userId])
+  @@index([contestId])
+}
+
+model FantasyScoreEvent {
+  id        String   @id
+  matchId    String
+  playerId   String
+  label      String
+  points     Int
+  createdAt  DateTime @default(now())
+
+  @@index([matchId])
+}
+
+model LeaderboardEntry {
+  id              String   @id
+  contestId       String
+  userId          String
+  points          Float
+  rank            Int
+  previousRank    Int
+  trend           String
+  projectedPoints Float?
+
+  @@index([contestId])
+  @@unique([contestId, userId])
 }
 
 model PredictionQuestion {
-  id               String   @id
+  id               String             @id
   matchId          String
   prompt           String
   category         String
+  options          Json
   locksAt          DateTime
   resolvesAt       DateTime
   state            String
@@ -118,40 +176,75 @@ model PredictionQuestion {
   badgeRewardId    String?
   cosmeticRewardId String?
   answers          PredictionAnswer[]
+  results          PredictionResult[]
 }
 
 model PredictionAnswer {
-  id         String   @id
-  questionId String
-  userId     String
-  optionId   String
+  id          String             @id
+  questionId  String
+  userId      String
+  optionId    String
   submittedAt DateTime
-  question   PredictionQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
-  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question    PredictionQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([questionId, userId])
+}
+
+model PredictionResult {
+  id                String             @id
+  questionId        String
+  userId            String
+  correctOptionId   String
+  awardedXp         Int
+  awardedBadgeId    String?
+  awardedCosmeticId String?
+  streak            Int
+  settledAt         DateTime
+  question          PredictionQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([questionId, userId])
 }
 
 model CosmeticItem {
-  id               String   @id
-  name             String
-  description      String
-  category         String
-  rarity           String
-  themeToken       String
-  gameplayAffecting Boolean @default(false)
-  transferable     Boolean @default(false)
-  redeemable       Boolean @default(false)
-  resaleValue      Boolean @default(false)
-  unlocks          CosmeticUnlock[]
+  id                String   @id
+  name              String
+  description       String
+  category          String
+  rarity            String
+  themeToken        String
+  gameplayAffecting Boolean  @default(false)
+  transferable      Boolean  @default(false)
+  redeemable        Boolean  @default(false)
+  resaleValue       Boolean  @default(false)
+  unlocks           CosmeticUnlock[]
 }
 
 model CosmeticUnlock {
-  id         String   @id
+  id         String       @id
   userId     String
   cosmeticId String
   source     String
   unlockedAt DateTime
   user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   cosmetic   CosmeticItem @relation(fields: [cosmeticId], references: [id], onDelete: Cascade)
+}
+
+model UserInventory {
+  userId      String   @id
+  cosmeticIds String[]
+  badgeIds    String[]
+  equipped    Json
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Badge {
+  id          String   @id
+  label       String
+  description String
+  category    String
+  seasonId    String?
 }
 
 model XPTransaction {
@@ -162,4 +255,10 @@ model XPTransaction {
   description String
   createdAt   DateTime
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ProviderState {
+  id       String   @id
+  status   String
+  syncedAt DateTime
 }

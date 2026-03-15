@@ -12,7 +12,7 @@ Web-first play-money fantasy cricket for public contests and private friend leag
 ## Workspace
 
 - `apps/web`: React dashboard for contests, leagues, predictions, and cosmetics
-- `apps/api`: Express API with seeded in-memory data, route validation, realtime hooks, and Prisma schema
+- `apps/api`: Express API with Prisma-backed persistence, first-run seed bootstrap, route validation, and realtime hooks
 - `packages/types`: shared contracts
 - `packages/validators`: zod payload validation
 - `packages/domain`: roster, invite, level, and inventory rules
@@ -25,13 +25,19 @@ Web-first play-money fantasy cricket for public contests and private friend leag
 1. Install dependencies with `bun install`.
 2. Create a Neon database and copy `.env.example` to `.env`.
 3. Fill `DATABASE_URL` with Neon’s pooled connection string and `DIRECT_URL` with Neon’s direct connection string.
-4. Start Redis locally with `docker compose up -d`.
-5. Generate the Prisma 7 client with `bun run prisma:generate`.
-6. Push the schema with `bun run prisma:push` or create a migration with `bun run prisma:migrate`.
-7. Run the API with `bun run dev:api`.
-8. Run the web app with `bun run dev:web`.
+4. Set `ADMIN_API_KEY` in `.env` if you want to use admin-only routes.
+   `CORS_ORIGIN` accepts a comma-separated allowlist. For local Bun/Vite dev, keep both `http://localhost:5173` and `http://localhost:5174` if you switch ports.
+5. Start Redis locally with `docker compose up -d`.
+6. Generate the Prisma 7 client with `bun run prisma:generate`.
+7. Push the schema with `bun run prisma:push` or create a migration with `bun run prisma:migrate`.
+8. Run the API with `bun run dev:api`.
+9. Run the web app with `bun run dev:web`.
 
-The current API still uses seeded in-memory records so the UI is immediately usable. Prisma is configured in the v7 style for Neon: [`apps/api/prisma.config.ts`](/Applications/Code/nodejs/fantasy-premiere-league/apps/api/prisma.config.ts) points the CLI at `DIRECT_URL`, while the runtime client uses the pooled `DATABASE_URL` through `@prisma/adapter-neon`.
+On first boot, the API seeds the database with the default demo data set and then persists all subsequent changes through Prisma. Prisma is configured in the v7 style for Neon: [`apps/api/prisma.config.ts`](/Applications/Code/nodejs/fantasy-premiere-league/apps/api/prisma.config.ts) points the CLI at `DIRECT_URL`, while the runtime client uses the pooled `DATABASE_URL` through `@prisma/adapter-neon`.
+
+If Prisma cannot authenticate or connect during local startup, the API falls back to the in-memory seed repository so `bun run dev` still works. Once your Neon credentials are valid, the same boot path will use persisted Prisma storage automatically.
+
+The frontend now stores a session token, not a raw user ID. Admin routes additionally require `x-admin-key` to match `ADMIN_API_KEY`.
 
 ## Guardrails
 

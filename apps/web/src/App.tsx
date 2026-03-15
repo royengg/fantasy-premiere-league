@@ -16,43 +16,76 @@ import { LockerView } from "./components/LockerView";
 import { AuthScreen } from "./components/AuthScreen";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
-const STORAGE_KEY = "fantasy-cricket-session";
+const STORAGE_KEY = "fantasy-cricket-session-token";
+const LEGACY_STORAGE_KEY = "fantasy-cricket-session";
 
 type Screen = "home" | "contests" | "leagues" | "predictions" | "locker";
 
-function getStoredUserId() {
+function getStoredSessionToken() {
   return window.localStorage.getItem(STORAGE_KEY);
+}
+
+function isExpiredSessionError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return (
+    error.message.includes("Authentication required") ||
+    error.message.includes("Session expired") ||
+    error.message.includes("Unknown user") ||
+    error.message.includes("Unknown profile") ||
+    error.message.includes("Inventory not found")
+  );
 }
 
 export function App() {
   const queryClient = useQueryClient();
-  const [userId, setUserId] = useState<string | null>(() => getStoredUserId());
+  const [sessionToken, setSessionToken] = useState<string | null>(() => getStoredSessionToken());
   const [screen, setScreen] = useState<Screen>("home");
+  const [sessionNotice, setSessionNotice] = useState<string | null>(null);
   
   const api = useMemo(
-    () => createApiClient({ baseUrl: API_URL, getUserId: () => userId }),
-    [userId]
+    () => createApiClient({ baseUrl: API_URL, getSessionToken: () => sessionToken }),
+    [sessionToken]
   );
 
   useEffect(() => {
-    if (!userId) return;
-    const socket = io(API_URL, { extraHeaders: { "x-user-id": userId } });
+    if (!sessionToken) return;
+    const socket = io(API_URL, { auth: { token: sessionToken } });
     socket.on("contest:leaderboard", () => queryClient.invalidateQueries({ queryKey: ["dashboard"] }));
     socket.on("league:activity", () => queryClient.invalidateQueries({ queryKey: ["dashboard"] }));
+    socket.on("user:refresh", () => queryClient.invalidateQueries({ queryKey: ["dashboard"] }));
     return () => { socket.close(); };
-  }, [queryClient, userId]);
+  }, [queryClient, sessionToken]);
 
   const { data: dashboard, isLoading, isError, error } = useQuery({
-    queryKey: ["dashboard", userId],
+    queryKey: ["dashboard", sessionToken],
     queryFn: () => api.getDashboard(),
-    enabled: Boolean(userId)
+    enabled: Boolean(sessionToken),
+    retry: false
   });
+  const hasExpiredSession = Boolean(sessionToken && isError && isExpiredSessionError(error));
+
+  useEffect(() => {
+    if (!hasExpiredSession) {
+      return;
+    }
+
+    window.localStorage.removeItem(STORAGE_KEY);
+    window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+    setSessionToken(null);
+    setSessionNotice("Your previous local session expired after the backend reset. Sign in again to continue.");
+    queryClient.removeQueries({ queryKey: ["dashboard"] });
+  }, [hasExpiredSession, queryClient]);
 
   const bootstrapMutation = useMutation({
     mutationFn: (payload: { name: string; email: string }) => api.bootstrap(payload),
     onSuccess: (session) => {
-      window.localStorage.setItem(STORAGE_KEY, session.userId);
-      setUserId(session.userId);
+      window.localStorage.setItem(STORAGE_KEY, session.token);
+      window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+      setSessionNotice(null);
+      setSessionToken(session.token);
     }
   });
 
@@ -86,18 +119,32 @@ export function App() {
 
   const handleLogout = () => {
     localStorage.removeItem(STORAGE_KEY);
-    setUserId(null);
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+    setSessionToken(null);
   };
 
-  if (!userId) {
+  if (!sessionToken) {
     return (
       <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
-        <AuthScreen onSubmit={(p: { name: string; email: string }) => bootstrapMutation.mutateAsync(p)} />
+        <AuthScreen
+          onSubmit={(p: { name: string; email: string }) => bootstrapMutation.mutateAsync(p)}
+          notice={sessionNotice}
+        />
       </ThemeProvider>
     );
   }
 
   if (isLoading) {
+    return (
+      <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
+        <div className="min-h-screen bg-surface flex items-center justify-center">
+          <div className="w-12 h-12 border-2 border-accent/20 border-t-accent rounded-full animate-spin" />
+        </div>
+      </ThemeProvider>
+    );
+  }
+
+  if (hasExpiredSession) {
     return (
       <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
         <div className="min-h-screen bg-surface flex items-center justify-center">

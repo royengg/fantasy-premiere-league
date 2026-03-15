@@ -69,6 +69,10 @@ export const adminCorrectionSchema = z.object({
   label: z.string().trim().min(3).max(100)
 });
 
+export const settlePredictionSchema = z.object({
+  correctOptionId: z.string().min(1)
+});
+
 export type AuthBootstrapInput = z.infer<typeof authBootstrapSchema>;
 export type CreateLeagueInput = z.infer<typeof createLeagueSchema>;
 export type JoinLeagueInput = z.infer<typeof joinLeagueSchema>;
@@ -76,4 +80,4 @@ export type SubmitRosterInput = z.infer<typeof submitRosterSchema>;
 export type PredictionAnswerInput = z.infer<typeof predictionAnswerSchema>;
 export type EquipCosmeticInput = z.infer<typeof equipCosmeticSchema>;
 export type AdminCorrectionInput = z.infer<typeof adminCorrectionSchema>;
-
+export type SettlePredictionInput = z.infer<typeof settlePredictionSchema>;
