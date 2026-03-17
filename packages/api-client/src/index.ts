@@ -13,7 +13,6 @@ import type {
 export interface ApiClientOptions {
   baseUrl: string;
   getSessionToken?: () => string | null;
-  getAdminKey?: () => string | null;
 }
 
 export class ApiError extends Error {
@@ -31,8 +30,7 @@ async function request<T>(
   baseUrl: string,
   path: string,
   init: RequestInit,
-  getSessionToken?: () => string | null,
-  getAdminKey?: () => string | null
+  getSessionToken?: () => string | null
 ): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("Content-Type", "application/json");
@@ -40,11 +38,6 @@ async function request<T>(
   const sessionToken = getSessionToken?.();
   if (sessionToken) {
     headers.set("Authorization", `Bearer ${sessionToken}`);
-  }
-
-  const adminKey = getAdminKey?.();
-  if (adminKey) {
-    headers.set("x-admin-key", adminKey);
   }
 
   const response = await fetch(`${baseUrl}${path}`, {
@@ -66,7 +59,7 @@ async function request<T>(
   return response.json() as Promise<T>;
 }
 
-export function createApiClient({ baseUrl, getSessionToken, getAdminKey }: ApiClientOptions) {
+export function createApiClient({ baseUrl, getSessionToken }: ApiClientOptions) {
   return {
     register: (payload: { email: string; name: string; password: string }) =>
       request<AuthResponse>(baseUrl, "/api/auth/register", {
@@ -103,16 +96,15 @@ export function createApiClient({ baseUrl, getSessionToken, getAdminKey }: ApiCl
       ),
     equipCosmetic: (cosmeticId: string) =>
       request<{ cosmeticId: string }>(baseUrl, "/api/inventory/equip", { method: "POST", body: JSON.stringify({ cosmeticId }) }, getSessionToken),
-    syncProvider: () => request<{ status: string; syncedAt: string }>(baseUrl, "/api/admin/provider-sync", { method: "POST" }, getSessionToken, getAdminKey),
+    syncProvider: () => request<{ status: string; syncedAt: string }>(baseUrl, "/api/admin/provider-sync", { method: "POST" }, getSessionToken),
     applyCorrection: (matchId: string, payload: { playerId: string; points: number; label: string }) =>
-      request<{ status: string }>(baseUrl, `/api/admin/matches/${matchId}/corrections`, { method: "POST", body: JSON.stringify(payload) }, getSessionToken, getAdminKey),
+      request<{ status: string }>(baseUrl, `/api/admin/matches/${matchId}/corrections`, { method: "POST", body: JSON.stringify(payload) }, getSessionToken),
     settlePrediction: (questionId: string, correctOptionId: string) =>
       request<{ settledCount: number; correctOptionId: string }>(
         baseUrl,
         `/api/admin/predictions/${questionId}/settle`,
         { method: "POST", body: JSON.stringify({ correctOptionId }) },
-        getSessionToken,
-        getAdminKey
+        getSessionToken
       )
   };
 }

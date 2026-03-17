@@ -32,10 +32,13 @@ export async function authenticatedUserId(req: Request, authService: AuthService
   return authService.authenticate(bearerToken(req));
 }
 
-export function assertAdminKey(req: Request, env: Env) {
-  if (req.header("x-admin-key") !== env.ADMIN_API_KEY) {
-    throw new Error("Admin authorization failed.");
-  }
+export async function authenticatedAdminUserId(
+  req: Request,
+  authService: AuthService
+): Promise<string> {
+  const userId = await authenticatedUserId(req, authService);
+  await authService.assertAdmin(userId);
+  return userId;
 }
 
 export function errorMessage(error: unknown, fallback: string): string {

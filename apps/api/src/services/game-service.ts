@@ -1,34 +1,13 @@
-import {
-  createInviteCode,
-  createLeagueBanner,
-  equipCosmetic,
-  levelFromXp,
-  normalizeIplTeam,
-  unlockCosmetic,
-  validateRoster
-} from "@fantasy-cricket/domain";
-import {
-  calculateRosterPoints,
-  canSubmitPrediction,
-  settlePredictionAnswer
-} from "@fantasy-cricket/scoring";
 import type {
   BuildRosterInput,
   Contest,
   CosmeticItem,
   DashboardPayload,
-  FantasyScoreEvent,
   LeaderboardEntry,
   League,
-  Match,
-  Player,
   PredictionAnswer,
   PredictionFeedPayload,
-  PredictionQuestion,
-  Profile,
   Roster,
-  Team,
-  User,
   UserInventory
 } from "@fantasy-cricket/types";
 import type {
@@ -38,193 +17,47 @@ import type {
   SubmitRosterInput
 } from "@fantasy-cricket/validators";
 
-import type { AppStore } from "../data/store.js";
-import type { AppRepository } from "../repositories/app-repository.js";
+import type { GameRuntimeRepository } from "../repositories/runtime-repository.js";
 import {
   buildProviderSyncSnapshot,
-  isProviderManagedId,
-  providerSyncResult,
   type ProviderSyncGateway,
-  type ProviderSyncResult
+  type ProviderSyncResult,
+  providerSyncResult
 } from "./provider-sync-service.js";
 import { cricketDataService } from "./cricket-data-service.js";
 
-interface PrismaGameRuntimeRepository {
-  createLeagueRecord: (userId: string, input: CreateLeagueInput) => Promise<League>;
-  joinLeagueByInvite: (userId: string, input: JoinLeagueInput) => Promise<League>;
-  submitRosterRecord: (
-    userId: string,
-    contestId: string,
-    input: SubmitRosterInput | BuildRosterInput
-  ) => Promise<Roster>;
-  answerPredictionRecord: (
-    userId: string,
-    questionId: string,
-    input: PredictionAnswerInput
-  ) => Promise<PredictionAnswer>;
-  settlePredictionRecord: (
-    questionId: string,
-    correctOptionId: string
-  ) => Promise<{ settledCount: number; correctOptionId: string }>;
-  equipCosmeticRecord: (userId: string, cosmeticId: string) => Promise<{ cosmeticId: string }>;
-  applyCorrectionRecord: (
-    matchId: string,
-    playerId: string,
-    label: string,
-    points: number
-  ) => Promise<{ status: string }>;
-  rebuildAllLeaderboards: () => Promise<void>;
-  applyProviderSnapshot: (snapshot: Awaited<ReturnType<typeof buildProviderSyncSnapshot>>) => Promise<void>;
-}
-
-interface PrismaGameReadRepository {
-  getDashboardPayload: (userId: string) => Promise<DashboardPayload>;
-  getVisibleContestsForUser: (userId: string) => Promise<Contest[]>;
-  getVisibleLeaguesForUser: (userId: string) => Promise<League[]>;
-  getPredictionFeedForUser: (userId: string) => Promise<PredictionFeedPayload>;
-  getInventoryForUser: (userId: string) => Promise<{ inventory: UserInventory; cosmetics: CosmeticItem[] }>;
-  getContestLeaderboardEntries: (contestId: string) => Promise<LeaderboardEntry[]>;
-  getContestSubscriberIds: (contestId: string) => Promise<string[]>;
-  getMatchSubscriberIds: (matchId: string) => Promise<string[]>;
-  getLeagueMemberIds: (leagueId: string) => Promise<string[]>;
-  getAllUserIds: () => Promise<string[]>;
-}
-
-function hasPrismaGameRuntimeRepository(
-  repository: AppRepository
-): repository is AppRepository & PrismaGameRuntimeRepository {
-  return typeof (repository as Partial<PrismaGameRuntimeRepository>).submitRosterRecord === "function";
-}
-
-function hasPrismaGameReadRepository(
-  repository: AppRepository
-): repository is AppRepository & PrismaGameReadRepository {
-  return typeof (repository as Partial<PrismaGameReadRepository>).getDashboardPayload === "function";
-}
-
-function preferredPublicContests(contests: Contest[]): Contest[] {
-  const providerManagedPublic = contests.filter(
-    (contest) => contest.kind === "public" && isProviderManagedId(contest.id)
-  );
-  if (providerManagedPublic.length > 0) {
-    return providerManagedPublic;
-  }
-
-  return contests.filter(
-    (contest) => contest.kind === "public" && !isProviderManagedId(contest.id)
-  );
-}
-
-function preferredQuestions(questions: PredictionQuestion[]): PredictionQuestion[] {
-  const providerQuestions = questions.filter((question) => isProviderManagedId(question.id));
-  return providerQuestions.length > 0
-    ? providerQuestions
-    : questions.filter((question) => !isProviderManagedId(question.id));
-}
-
 export class GameService {
   constructor(
-    private readonly repository: AppRepository,
+    private readonly repository: GameRuntimeRepository,
     private readonly providerGateway: ProviderSyncGateway = cricketDataService
   ) {}
 
   async initialize(): Promise<void> {
-    if (hasPrismaGameRuntimeRepository(this.repository)) {
-      await this.repository.rebuildAllLeaderboards();
-      return;
-    }
-
-    const store = await this.repository.loadStore();
-    this.recomputeAllLeaderboards(store);
-    await this.repository.replaceStore(store);
+    await this.repository.rebuildAllLeaderboards();
   }
 
   async getDashboard(userId: string): Promise<DashboardPayload> {
-    if (hasPrismaGameReadRepository(this.repository)) {
-      return this.repository.getDashboardPayload(userId);
-    }
-
-    return this.read((store) => {
-      return this.buildDashboardPayload(store, userId);
-    });
+    return this.repository.getDashboardPayload(userId);
   }
 
   async getContests(userId: string): Promise<Contest[]> {
-    if (hasPrismaGameReadRepository(this.repository)) {
-      return this.repository.getVisibleContestsForUser(userId);
-    }
-
-    return this.read((store) => this.visibleContestsForUser(store, userId));
+    return this.repository.getVisibleContestsForUser(userId);
   }
 
   async getLeagues(userId: string): Promise<League[]> {
-    if (hasPrismaGameReadRepository(this.repository)) {
-      return this.repository.getVisibleLeaguesForUser(userId);
-    }
-
-    return this.read((store) =>
-      store.leagues.filter(
-        (league) => league.visibility === "public" || league.memberIds.includes(userId)
-      )
-    );
+    return this.repository.getVisibleLeaguesForUser(userId);
   }
 
   async getPredictions(userId: string): Promise<PredictionFeedPayload> {
-    if (hasPrismaGameReadRepository(this.repository)) {
-      return this.repository.getPredictionFeedForUser(userId);
-    }
-
-    return this.read((store) => this.buildPredictionFeed(store, userId));
+    return this.repository.getPredictionFeedForUser(userId);
   }
 
   async createLeague(userId: string, input: CreateLeagueInput): Promise<League> {
-    if (hasPrismaGameRuntimeRepository(this.repository)) {
-      return this.repository.createLeagueRecord(userId, input);
-    }
-
-    return this.write((store) => {
-      const league: League = {
-        id: crypto.randomUUID(),
-        name: input.name,
-        description: input.description,
-        visibility: input.visibility,
-        createdBy: userId,
-        inviteCode: createInviteCode(input.name),
-        memberIds: [userId],
-        contestIds: [],
-        bannerStyle: createLeagueBanner(input.visibility)
-      };
-
-      store.leagues.push(league);
-      store.invites.push({
-        id: crypto.randomUUID(),
-        leagueId: league.id,
-        code: league.inviteCode,
-        createdBy: userId,
-        createdAt: new Date().toISOString()
-      });
-
-      return league;
-    });
+    return this.repository.createLeagueRecord(userId, input);
   }
 
   async joinLeague(userId: string, input: JoinLeagueInput): Promise<League> {
-    if (hasPrismaGameRuntimeRepository(this.repository)) {
-      return this.repository.joinLeagueByInvite(userId, input);
-    }
-
-    return this.write((store) => {
-      const league = store.leagues.find((entry) => entry.inviteCode === input.inviteCode);
-      if (!league) {
-        throw new Error("Invite code is invalid.");
-      }
-
-      if (!league.memberIds.includes(userId)) {
-        league.memberIds.push(userId);
-      }
-
-      return league;
-    });
+    return this.repository.joinLeagueByInvite(userId, input);
   }
 
   async submitRoster(
@@ -232,62 +65,7 @@ export class GameService {
     contestId: string,
     input: SubmitRosterInput | BuildRosterInput
   ): Promise<Roster> {
-    if (hasPrismaGameRuntimeRepository(this.repository)) {
-      return this.repository.submitRosterRecord(userId, contestId, input);
-    }
-
-    return this.write((store) => {
-      const contest = store.contests.find((entry) => entry.id === contestId);
-      if (!contest) {
-        throw new Error("Contest not found.");
-      }
-
-      const match = this.getMatch(store, contest.matchId);
-      const profile = this.getProfile(store, userId);
-      const matchPlayers = this.playersForMatch(store, match);
-      const validation = validateRoster(contest, match, matchPlayers, input, new Date());
-
-      if (!validation.valid) {
-        throw new Error(validation.errors.join(" "));
-      }
-
-      const existing = store.rosters.find(
-        (entry) => entry.contestId === contestId && entry.userId === userId
-      );
-      const previousSpend = existing?.totalCredits ?? 0;
-      const nextSpend = validation.totalCredits;
-      const creditDelta = this.roundCredits(nextSpend - previousSpend);
-
-      if (creditDelta > profile.credits) {
-        throw new Error(
-          `Not enough credits. You need ${this.roundCredits(creditDelta - profile.credits).toFixed(1)} more credits to save this roster.`
-        );
-      }
-
-      profile.credits = this.roundCredits(profile.credits - creditDelta);
-
-      const roster: Roster = {
-        id: existing?.id ?? crypto.randomUUID(),
-        contestId,
-        userId,
-        players: input.playerIds.map((playerId) => ({ playerId })),
-        captainPlayerId: input.captainPlayerId,
-        viceCaptainPlayerId: input.viceCaptainPlayerId,
-        totalCredits: validation.totalCredits,
-        submittedAt: new Date().toISOString(),
-        locked: new Date() >= new Date(contest.lockTime),
-        hasUncappedPlayer: validation.hasUncappedPlayer
-      };
-
-      if (existing) {
-        Object.assign(existing, roster);
-      } else {
-        store.rosters.push(roster);
-      }
-
-      this.recomputeContestLeaderboard(store, contest);
-      return roster;
-    });
+    return this.repository.submitRosterRecord(userId, contestId, input);
   }
 
   async answerPrediction(
@@ -295,152 +73,26 @@ export class GameService {
     questionId: string,
     input: PredictionAnswerInput
   ): Promise<PredictionAnswer> {
-    if (hasPrismaGameRuntimeRepository(this.repository)) {
-      return this.repository.answerPredictionRecord(userId, questionId, input);
-    }
-
-    return this.write((store) => {
-      const question = this.getQuestion(store, questionId);
-      if (!canSubmitPrediction(question)) {
-        throw new Error("Prediction is locked.");
-      }
-
-      const option = question.options.find((entry) => entry.id === input.optionId);
-      if (!option) {
-        throw new Error("Prediction option not found.");
-      }
-
-      const existing = store.answers.find(
-        (entry) => entry.questionId === questionId && entry.userId === userId
-      );
-      const answer: PredictionAnswer = {
-        id: existing?.id ?? crypto.randomUUID(),
-        questionId,
-        userId,
-        optionId: input.optionId,
-        submittedAt: new Date().toISOString()
-      };
-
-      if (existing) {
-        Object.assign(existing, answer);
-      } else {
-        store.answers.push(answer);
-      }
-
-      return answer;
-    });
+    return this.repository.answerPredictionRecord(userId, questionId, input);
   }
 
   async settlePrediction(
     questionId: string,
     correctOptionId: string
   ): Promise<{ settledCount: number; correctOptionId: string }> {
-    if (hasPrismaGameRuntimeRepository(this.repository)) {
-      return this.repository.settlePredictionRecord(questionId, correctOptionId);
-    }
-
-    return this.write((store) => {
-      const question = this.getQuestion(store, questionId);
-      if (question.state === "settled") {
-        throw new Error("Prediction already settled.");
-      }
-
-      const option = question.options.find((entry) => entry.id === correctOptionId);
-      if (!option) {
-        throw new Error("Prediction option not found.");
-      }
-
-      question.state = "settled";
-      const settledAt = new Date().toISOString();
-      const answers = store.answers.filter((entry) => entry.questionId === questionId);
-
-      for (const answer of answers) {
-        const profile = this.getProfile(store, answer.userId);
-        const inventory = this.getInventoryRecord(store, answer.userId);
-        const settled = settlePredictionAnswer(
-          question,
-          answer,
-          correctOptionId,
-          profile.streak,
-          settledAt
-        );
-
-        store.results.push(settled.result);
-        store.xpTransactions.push(settled.transaction);
-
-        profile.xp += settled.result.awardedXp;
-        profile.level = levelFromXp(profile.xp);
-        profile.streak = settled.result.streak;
-
-        if (
-          settled.result.awardedBadgeId &&
-          !inventory.badgeIds.includes(settled.result.awardedBadgeId)
-        ) {
-          inventory.badgeIds.push(settled.result.awardedBadgeId);
-        }
-
-        if (settled.result.awardedCosmeticId) {
-          this.unlockCosmeticForUserInStore(
-            store,
-            answer.userId,
-            settled.result.awardedCosmeticId,
-            "prediction"
-          );
-        }
-      }
-
-      return {
-        settledCount: answers.length,
-        correctOptionId
-      };
-    });
+    return this.repository.settlePredictionRecord(questionId, correctOptionId);
   }
 
   async getInventory(userId: string): Promise<{ inventory: UserInventory; cosmetics: CosmeticItem[] }> {
-    if (hasPrismaGameReadRepository(this.repository)) {
-      return this.repository.getInventoryForUser(userId);
-    }
-
-    return this.read((store) => {
-      const inventory = this.getInventoryRecord(store, userId);
-
-      return {
-        inventory,
-        cosmetics: store.cosmetics.filter((item) => inventory.cosmeticIds.includes(item.id))
-      };
-    });
+    return this.repository.getInventoryForUser(userId);
   }
 
   async getContestLeaderboard(contestId: string): Promise<LeaderboardEntry[]> {
-    if (hasPrismaGameReadRepository(this.repository)) {
-      return this.repository.getContestLeaderboardEntries(contestId);
-    }
-
-    return this.read((store) =>
-      store.leaderboard.filter((entry) => entry.contestId === contestId)
-    );
+    return this.repository.getContestLeaderboardEntries(contestId);
   }
 
   async equipUserCosmetic(userId: string, cosmeticId: string): Promise<{ cosmeticId: string }> {
-    if (hasPrismaGameRuntimeRepository(this.repository)) {
-      return this.repository.equipCosmeticRecord(userId, cosmeticId);
-    }
-
-    return this.write((store) => {
-      const inventory = this.getInventoryRecord(store, userId);
-      const profile = this.getProfile(store, userId);
-      const item = store.cosmetics.find((entry) => entry.id === cosmeticId);
-
-      if (!item) {
-        throw new Error("Cosmetic not found.");
-      }
-
-      const updated = equipCosmetic(inventory, profile, item);
-      Object.assign(inventory, updated.inventory);
-      Object.assign(profile, updated.profile);
-
-      return { cosmeticId };
-    });
+    return this.repository.equipCosmeticRecord(userId, cosmeticId);
   }
 
   async applyCorrection(
@@ -449,422 +101,40 @@ export class GameService {
     label: string,
     points: number
   ): Promise<{ status: string }> {
-    if (hasPrismaGameRuntimeRepository(this.repository)) {
-      return this.repository.applyCorrectionRecord(matchId, playerId, label, points);
-    }
-
-    return this.write((store) => {
-      const match = this.getMatch(store, matchId);
-      store.scoreEvents.push({
-        id: crypto.randomUUID(),
-        matchId: match.id,
-        playerId,
-        label,
-        points,
-        createdAt: new Date().toISOString()
-      });
-
-      store.contests
-        .filter((contest) => contest.matchId === match.id)
-        .forEach((contest) => this.recomputeContestLeaderboard(store, contest));
-
-      return { status: "corrected" };
-    });
+    return this.repository.applyCorrectionRecord(matchId, playerId, label, points);
   }
 
   async syncProvider(): Promise<ProviderSyncResult> {
-    if (hasPrismaGameRuntimeRepository(this.repository)) {
-      const snapshot = await buildProviderSyncSnapshot(this.providerGateway);
-      await this.repository.applyProviderSnapshot(snapshot);
-      return providerSyncResult(snapshot);
+    const snapshot = await buildProviderSyncSnapshot(this.providerGateway);
+    if (snapshot.matches.length === 0) {
+      throw new Error("Provider sync returned no matches. Existing provider data was preserved.");
     }
 
-    return this.writeAsync(async (store) => {
-      const snapshot = await buildProviderSyncSnapshot(this.providerGateway);
-
-      store.teams = [
-        ...store.teams.filter((team) => !isProviderManagedId(team.id)),
-        ...snapshot.teams
-      ];
-      store.players = [
-        ...store.players.filter((player) => !isProviderManagedId(player.id)),
-        ...snapshot.players
-      ];
-      store.matches = [
-        ...store.matches.filter((match) => !isProviderManagedId(match.id)),
-        ...snapshot.matches
-      ];
-      store.contests = [
-        ...store.contests.filter((contest) => !isProviderManagedId(contest.id)),
-        ...snapshot.contests
-      ];
-      store.questions = [
-        ...store.questions.filter((question) => !isProviderManagedId(question.id)),
-        ...snapshot.questions
-      ];
-      store.scoreEvents = [
-        ...store.scoreEvents.filter((event) => !isProviderManagedId(event.id)),
-        ...snapshot.scoreEvents
-      ];
-
-      this.pruneProviderData(store);
-      this.recomputeAllLeaderboards(store);
-
-      store.provider = {
-        status: "ready",
-        syncedAt: snapshot.syncedAt,
-        lastAttemptedAt: new Date().toISOString()
-      };
-
-      return providerSyncResult(snapshot);
-    });
+    await this.repository.applyProviderSnapshot(snapshot);
+    return providerSyncResult(snapshot);
   }
 
-  async getProviderStatus(): Promise<AppStore["provider"]> {
-    return this.read((store) => store.provider);
+  async getProviderStatus() {
+    return this.repository.getProviderStatus();
+  }
+
+  async getProviderSyncContext() {
+    return this.repository.getProviderSyncContext();
   }
 
   async contestSubscriberIds(contestId: string): Promise<string[]> {
-    if (hasPrismaGameReadRepository(this.repository)) {
-      return this.repository.getContestSubscriberIds(contestId);
-    }
-
-    return this.read((store) => this.contestSubscriberIdsFromStore(store, contestId));
+    return this.repository.getContestSubscriberIds(contestId);
   }
 
   async matchSubscriberIds(matchId: string): Promise<string[]> {
-    if (hasPrismaGameReadRepository(this.repository)) {
-      return this.repository.getMatchSubscriberIds(matchId);
-    }
-
-    return this.read((store) => {
-      const userIds = new Set<string>();
-
-      store.contests
-        .filter((contest) => contest.matchId === matchId)
-        .forEach((contest) => {
-          this.contestSubscriberIdsFromStore(store, contest.id).forEach((userId) => userIds.add(userId));
-        });
-
-      return [...userIds];
-    });
+    return this.repository.getMatchSubscriberIds(matchId);
   }
 
   async leagueMemberIds(leagueId: string): Promise<string[]> {
-    if (hasPrismaGameReadRepository(this.repository)) {
-      return this.repository.getLeagueMemberIds(leagueId);
-    }
-
-    return this.read((store) => {
-      const league = store.leagues.find((entry) => entry.id === leagueId);
-      if (!league) {
-        throw new Error("League not found.");
-      }
-
-      return [...league.memberIds];
-    });
+    return this.repository.getLeagueMemberIds(leagueId);
   }
 
   async allUserIds(): Promise<string[]> {
-    if (hasPrismaGameReadRepository(this.repository)) {
-      return this.repository.getAllUserIds();
-    }
-
-    return this.read((store) => store.users.map((user) => user.id));
-  }
-
-  private async read<T>(reader: (store: AppStore) => T): Promise<T> {
-    const store = await this.repository.loadStore();
-    return reader(store);
-  }
-
-  private async write<T>(writer: (store: AppStore) => T): Promise<T> {
-    const store = await this.repository.loadStore();
-    const result = writer(store);
-    await this.repository.replaceStore(store);
-    return result;
-  }
-
-  private async writeAsync<T>(writer: (store: AppStore) => Promise<T> | T): Promise<T> {
-    const store = await this.repository.loadStore();
-    const result = await writer(store);
-    await this.repository.replaceStore(store);
-    return result;
-  }
-
-  private getUser(store: AppStore, userId: string): User {
-    const user = store.users.find((entry) => entry.id === userId);
-    if (!user) {
-      throw new Error("Unknown user.");
-    }
-
-    return user;
-  }
-
-  private getProfile(store: AppStore, userId: string): Profile {
-    const profile = store.profiles.find((entry) => entry.userId === userId);
-    if (!profile) {
-      throw new Error("Unknown profile.");
-    }
-
-    return profile;
-  }
-
-  private roundCredits(value: number) {
-    return Math.round(value * 10) / 10;
-  }
-
-  private getInventoryRecord(store: AppStore, userId: string): UserInventory {
-    const inventory = store.inventories.find((entry) => entry.userId === userId);
-    if (!inventory) {
-      throw new Error("Inventory not found.");
-    }
-
-    return inventory;
-  }
-
-  private buildDashboardPayload(store: AppStore, userId: string): DashboardPayload {
-    const contests = this.visibleContestsForUser(store, userId);
-    const contestIds = new Set(contests.map((contest) => contest.id));
-    const leagues = store.leagues.filter(
-      (league) => league.visibility === "public" || league.memberIds.includes(userId)
-    );
-    const predictions = this.buildPredictionFeed(store, userId);
-    const matchIds = new Set([
-      ...contests.map((contest) => contest.matchId),
-      ...predictions.questions.map((question) => question.matchId)
-    ]);
-    const matches = store.matches.filter((match) => matchIds.has(match.id));
-    const teamIds = new Set(matches.flatMap((match) => [match.homeTeamId, match.awayTeamId]));
-    const teams = store.teams
-      .filter((team) => teamIds.has(team.id))
-      .map((team) => normalizeIplTeam(team));
-    const players = store.players.filter((player) => teamIds.has(player.teamId));
-
-    return {
-      user: this.getUser(store, userId),
-      profile: this.getProfile(store, userId),
-      contests,
-      leagues,
-      matches,
-      teams,
-      players,
-      rosters: store.rosters.filter(
-        (roster) =>
-          contestIds.has(roster.contestId) &&
-          (roster.userId === userId || this.isPublicContest(store, roster.contestId))
-      ),
-      leaderboard: store.leaderboard.filter((entry) => contestIds.has(entry.contestId)),
-      questions: predictions.questions,
-      answers: predictions.answers,
-      inventory: this.getInventoryRecord(store, userId),
-      cosmetics: store.cosmetics,
-      badges: store.badges
-    };
-  }
-
-  private buildPredictionFeed(store: AppStore, userId: string): PredictionFeedPayload {
-    const questions = this.normalizeQuestionsForDisplay(
-      preferredQuestions(store.questions),
-      store.matches,
-      store.teams
-    );
-    const questionIds = new Set(questions.map((question) => question.id));
-
-    return {
-      questions,
-      answers: store.answers.filter(
-        (answer) => answer.userId === userId && questionIds.has(answer.questionId)
-      ),
-      results: store.results.filter(
-        (result) => result.userId === userId && questionIds.has(result.questionId)
-      )
-    };
-  }
-
-  private normalizeQuestionsForDisplay(
-    questions: PredictionQuestion[],
-    matches: Match[],
-    teams: Team[]
-  ): PredictionQuestion[] {
-    const normalizedTeams = teams.map((team) => normalizeIplTeam(team));
-    const teamMap = new Map(normalizedTeams.map((team) => [team.id, team]));
-    const matchMap = new Map(matches.map((match) => [match.id, match]));
-
-    return questions.map((question) => {
-      const match = matchMap.get(question.matchId);
-      const homeTeam = match ? teamMap.get(match.homeTeamId) : undefined;
-      const awayTeam = match ? teamMap.get(match.awayTeamId) : undefined;
-
-      return {
-        ...question,
-        prompt:
-          question.category === "winner" && homeTeam && awayTeam
-            ? `Who wins ${homeTeam.name} vs ${awayTeam.name}?`
-            : question.prompt,
-        options: question.options.map((option) => {
-          const linkedTeam = teamMap.get(option.value);
-          return linkedTeam ? { ...option, label: linkedTeam.name } : option;
-        })
-      };
-    });
-  }
-
-  private unlockCosmeticForUserInStore(
-    store: AppStore,
-    userId: string,
-    cosmeticId: string,
-    source: "prediction" | "seasonal" | "admin"
-  ) {
-    const inventory = this.getInventoryRecord(store, userId);
-    const item = store.cosmetics.find((entry) => entry.id === cosmeticId);
-    if (!item) {
-      throw new Error("Cosmetic not found.");
-    }
-
-    const updated = unlockCosmetic(inventory, userId, item, source, new Date().toISOString());
-    Object.assign(inventory, updated.inventory);
-    if (updated.unlock) {
-      store.cosmeticUnlocks.push(updated.unlock);
-    }
-  }
-
-  private contestSubscriberIdsFromStore(store: AppStore, contestId: string): string[] {
-    const contest = store.contests.find((entry) => entry.id === contestId);
-    if (!contest) {
-      throw new Error("Contest not found.");
-    }
-
-    const userIds = new Set(
-      store.rosters.filter((roster) => roster.contestId === contestId).map((roster) => roster.userId)
-    );
-
-    if (contest.kind === "public") {
-      store.users.forEach((user) => userIds.add(user.id));
-    }
-
-    if (contest.leagueId) {
-      const league = store.leagues.find((entry) => entry.id === contest.leagueId);
-      league?.memberIds.forEach((userId) => userIds.add(userId));
-    }
-
-    return [...userIds];
-  }
-
-  private getMatch(store: AppStore, matchId: string): Match {
-    const match = store.matches.find((entry) => entry.id === matchId);
-    if (!match) {
-      throw new Error("Match not found.");
-    }
-
-    return match;
-  }
-
-  private getQuestion(store: AppStore, questionId: string): PredictionQuestion {
-    const question = store.questions.find((entry) => entry.id === questionId);
-    if (!question) {
-      throw new Error("Prediction question not found.");
-    }
-
-    return question;
-  }
-
-  private playersForMatch(store: AppStore, match: Match): Player[] {
-    return store.players.filter(
-      (player) => player.teamId === match.homeTeamId || player.teamId === match.awayTeamId
-    );
-  }
-
-  private scoreEventsForContest(store: AppStore, contest: Contest): FantasyScoreEvent[] {
-    return store.scoreEvents.filter((event) => event.matchId === contest.matchId);
-  }
-
-  private isPublicContest(store: AppStore, contestId: string): boolean {
-    return store.contests.some((contest) => contest.id === contestId && contest.kind === "public");
-  }
-
-  private visibleContestsForUser(store: AppStore, userId: string): Contest[] {
-    const privateContestIds = new Set(
-      store.leagues
-        .filter((league) => league.visibility === "public" || league.memberIds.includes(userId))
-        .flatMap((league) => league.contestIds)
-    );
-
-    const visiblePrivateContests = store.contests.filter(
-      (contest) => contest.kind === "private" && privateContestIds.has(contest.id)
-    );
-
-    return [...preferredPublicContests(store.contests), ...visiblePrivateContests];
-  }
-
-  private visibleQuestions(store: AppStore): PredictionQuestion[] {
-    return preferredQuestions(store.questions);
-  }
-
-  private pruneProviderData(store: AppStore) {
-    const playerIds = new Set(store.players.map((player) => player.id));
-    const contestIds = new Set(store.contests.map((contest) => contest.id));
-    const questionIds = new Set(store.questions.map((question) => question.id));
-
-    store.rosters = store.rosters.filter((roster) => {
-      if (!isProviderManagedId(roster.contestId)) {
-        return true;
-      }
-
-      return (
-        contestIds.has(roster.contestId) &&
-        roster.players.every((player) => playerIds.has(player.playerId)) &&
-        playerIds.has(roster.captainPlayerId) &&
-        playerIds.has(roster.viceCaptainPlayerId)
-      );
-    });
-
-    store.leaderboard = store.leaderboard.filter(
-      (entry) => !isProviderManagedId(entry.contestId) || contestIds.has(entry.contestId)
-    );
-    store.answers = store.answers.filter(
-      (answer) => !isProviderManagedId(answer.questionId) || questionIds.has(answer.questionId)
-    );
-    store.results = store.results.filter(
-      (result) => !isProviderManagedId(result.questionId) || questionIds.has(result.questionId)
-    );
-  }
-
-  private recomputeAllLeaderboards(store: AppStore) {
-    store.contests.forEach((contest) => this.recomputeContestLeaderboard(store, contest));
-  }
-
-  private recomputeContestLeaderboard(store: AppStore, contest: Contest) {
-    const players = this.playersForMatch(store, this.getMatch(store, contest.matchId));
-    const events = this.scoreEventsForContest(store, contest);
-
-    const previousLeaderboard = store.leaderboard.filter((entry) => entry.contestId === contest.id);
-    const previousRanks = new Map(previousLeaderboard.map((entry) => [entry.userId, entry.rank]));
-
-    const ranked = store.rosters
-      .filter((roster) => roster.contestId === contest.id)
-      .map((roster) => ({
-        roster,
-        score: calculateRosterPoints(roster, players, events).total
-      }))
-      .sort((left, right) => right.score - left.score);
-
-    const withoutContest = store.leaderboard.filter((entry) => entry.contestId !== contest.id);
-    const nextEntries: LeaderboardEntry[] = ranked.map(({ roster, score }, index) => {
-      const currentRank = index + 1;
-      const prevRank = previousRanks.get(roster.userId) ?? currentRank;
-
-      return {
-        id: `${contest.id}-${roster.userId}`,
-        contestId: contest.id,
-        userId: roster.userId,
-        points: score,
-        rank: currentRank,
-        previousRank: prevRank,
-        trend: currentRank < prevRank ? "up" : currentRank > prevRank ? "down" : "steady"
-      };
-    });
-
-    store.leaderboard = [...withoutContest, ...nextEntries];
+    return this.repository.getAllUserIds();
   }
 }

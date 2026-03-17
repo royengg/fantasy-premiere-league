@@ -1,10 +1,10 @@
-import type { AppStore } from "../data/store.js";
 import type { Env } from "../lib/env.js";
-import type { AppRepository } from "../repositories/app-repository.js";
-import { isProviderManagedId } from "./provider-sync-service.js";
+import type {
+  GameRuntimeRepository,
+  ProviderSyncContext
+} from "../repositories/runtime-repository.js";
 import type { GameService } from "./game-service.js";
 
-const IST_TIME_ZONE = "Asia/Kolkata";
 const SCHEDULER_POLL_INTERVAL_MS = 1000 * 60 * 30;
 const UPCOMING_REFRESH_WINDOW_MS = 1000 * 60 * 60 * 24 * 3;
 const DAILY_REFRESH_INTERVAL_MS = 1000 * 60 * 60 * 24;
@@ -12,48 +12,13 @@ const MATCH_DAY_SYNC_LEAD_MS = 1000 * 60 * 60 * 6;
 const PRE_MATCH_REFRESH_INTERVAL_MS = 1000 * 60 * 60 * 6;
 const FAILED_SYNC_RETRY_COOLDOWN_MS = 1000 * 60 * 90;
 
-function istDayKey(timestamp: string | number | Date) {
-  const date = new Date(timestamp);
-
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: IST_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).format(date);
-}
-
-function nextUpcomingProviderMatch(store: AppStore) {
-  const now = Date.now();
-
-  return store.matches
-    .filter(
-      (match) =>
-        isProviderManagedId(match.id) &&
-        match.state === "scheduled" &&
-        new Date(match.startsAt).getTime() > now
-    )
-    .sort(
-      (left, right) =>
-        new Date(left.startsAt).getTime() - new Date(right.startsAt).getTime()
-    )[0];
-}
-
-function hasProviderFeed(store: AppStore) {
-  return (
-    store.matches.some((match) => isProviderManagedId(match.id)) &&
-    store.contests.some((contest) => contest.kind === "public" && isProviderManagedId(contest.id)) &&
-    store.players.some((player) => isProviderManagedId(player.id))
-  );
-}
-
 export class ProviderSyncScheduler {
   private intervalId?: ReturnType<typeof setInterval>;
   private syncInFlight: Promise<void> | null = null;
 
   constructor(
     private readonly env: Env,
-    private readonly repository: AppRepository,
+    private readonly repository: GameRuntimeRepository,
     private readonly gameService: GameService
   ) {}
 
@@ -82,13 +47,13 @@ export class ProviderSyncScheduler {
       return;
     }
 
-    const store = await this.repository.loadStore();
-    if (!this.shouldSync(store, trigger)) {
+    const context = await this.repository.getProviderSyncContext();
+    if (!this.shouldSync(context, trigger)) {
       return;
     }
 
     const attemptAt = new Date().toISOString();
-    const previousStatus = store.provider.status;
+    const previousStatus = context.provider.status;
     await this.repository.updateProviderState({
       status: "syncing",
       lastAttemptedAt: attemptAt
@@ -113,29 +78,31 @@ export class ProviderSyncScheduler {
     await this.syncInFlight;
   }
 
-  private shouldSync(store: AppStore, trigger: "startup" | "interval") {
+  private shouldSync(
+    context: ProviderSyncContext,
+    trigger: "startup" | "interval"
+  ) {
     const now = Date.now();
-    const lastAttemptedAt = new Date(store.provider.lastAttemptedAt).getTime();
-    const lastSyncedAt = new Date(store.provider.syncedAt).getTime();
+    const lastAttemptedAt = new Date(context.provider.lastAttemptedAt).getTime();
+    const lastSyncedAt = new Date(context.provider.syncedAt).getTime();
 
     if (
-      store.provider.status !== "ready" &&
+      context.provider.status !== "ready" &&
       Number.isFinite(lastAttemptedAt) &&
       now - lastAttemptedAt < FAILED_SYNC_RETRY_COOLDOWN_MS
     ) {
       return false;
     }
 
-    if (!hasProviderFeed(store)) {
+    if (!context.hasProviderFeed) {
       return true;
     }
 
-    const nextMatch = nextUpcomingProviderMatch(store);
-    if (!nextMatch) {
+    if (!context.nextUpcomingProviderMatchStartsAt) {
       return false;
     }
 
-    const nextMatchStart = new Date(nextMatch.startsAt).getTime();
+    const nextMatchStart = new Date(context.nextUpcomingProviderMatchStartsAt).getTime();
     if (!Number.isFinite(nextMatchStart) || now >= nextMatchStart) {
       return false;
     }

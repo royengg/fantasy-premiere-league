@@ -10,7 +10,6 @@ import {
 import { calculateRosterPoints, canSubmitPrediction, settlePredictionAnswer } from "@fantasy-cricket/scoring";
 import type {
   BuildRosterInput,
-  AuthSession,
   Badge,
   Contest,
   CosmeticItem,
@@ -41,7 +40,7 @@ import type {
   SubmitRosterInput
 } from "@fantasy-cricket/validators";
 
-import type { AppStore, AuthCredential } from "../data/store.js";
+import type { AppStore } from "../data/store.js";
 import { prisma } from "../lib/prisma.js";
 import { Prisma, type PrismaClient } from "../generated/prisma/client";
 import type {
@@ -49,13 +48,21 @@ import type {
   ProviderStateModel,
   ProviderStateUpdateInput
 } from "../generated/prisma/models/ProviderState";
-import type { AppRepository } from "./app-repository.js";
+import type {
+  AuthRuntimeRepository,
+  GameRuntimeRepository
+} from "./runtime-repository.js";
 import type { ProviderSyncSnapshot } from "../services/provider-sync-service.js";
 
 const SNAPSHOT_TRANSACTION_OPTIONS = {
   maxWait: 10_000,
   timeout: 30_000
 } as const;
+const DASHBOARD_PUBLIC_CONTEST_LIMIT = 8;
+const DASHBOARD_PRIVATE_CONTEST_LIMIT = 8;
+const DASHBOARD_LEAGUE_LIMIT = 20;
+const DASHBOARD_PREDICTION_LIMIT = 12;
+const DASHBOARD_LEADERBOARD_LIMIT = 25;
 
 function asJson<T>(value: Prisma.JsonValue | null): T {
   return (value ?? null) as T;
@@ -77,30 +84,12 @@ function toDateString(value: Date | null): string | undefined {
   return value?.toISOString();
 }
 
-function mapSessions(rows: Array<{ token: string; userId: string; createdAt: Date; expiresAt: Date }>): AuthSession[] {
-  return rows.map((row) => ({
-    token: row.token,
-    userId: row.userId,
-    createdAt: row.createdAt.toISOString(),
-    expiresAt: row.expiresAt.toISOString()
-  }));
-}
-
-function mapCredentials(
-  rows: Array<{ userId: string; passwordHash: string; updatedAt: Date }>
-): AuthCredential[] {
-  return rows.map((row) => ({
-    userId: row.userId,
-    passwordHash: row.passwordHash,
-    updatedAt: row.updatedAt.toISOString()
-  }));
-}
-
-function mapUsers(rows: Array<{ id: string; email: string; name: string; createdAt: Date }>): User[] {
+function mapUsers(rows: Array<{ id: string; email: string; name: string; isAdmin: boolean; createdAt: Date }>): User[] {
   return rows.map((row) => ({
     id: row.id,
     email: row.email,
     name: row.name,
+    isAdmin: row.isAdmin,
     createdAt: row.createdAt.toISOString()
   }));
 }
@@ -228,6 +217,29 @@ function mapLeaderboard(rows: Array<{ id: string; contestId: string; userId: str
     previousRank: row.previousRank,
     trend: row.trend as LeaderboardEntry["trend"],
     projectedPoints: row.projectedPoints ?? undefined
+  }));
+}
+
+function withLeaderboardDisplayNames(
+  entries: LeaderboardEntry[],
+  profiles: Profile[],
+  users: User[]
+): LeaderboardEntry[] {
+  const displayNameByUserId = new Map<string, string>();
+
+  for (const profile of profiles) {
+    displayNameByUserId.set(profile.userId, profile.username);
+  }
+
+  for (const user of users) {
+    if (!displayNameByUserId.has(user.id)) {
+      displayNameByUserId.set(user.id, user.name);
+    }
+  }
+
+  return entries.map((entry) => ({
+    ...entry,
+    displayName: displayNameByUserId.get(entry.userId)
   }));
 }
 
@@ -473,7 +485,7 @@ interface InformationSchemaColumn {
   data_type: string;
 }
 
-export class PrismaAppRepository implements AppRepository {
+export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
   private async ensureRuntimeCompatibility(): Promise<void> {
@@ -484,7 +496,7 @@ export class PrismaAppRepository implements AppRepository {
         data_type::TEXT AS data_type
       FROM information_schema.columns
       WHERE table_schema = 'public'
-        AND table_name IN ('Profile', 'Friendship', 'CosmeticItem', 'League', 'Contest', 'LeagueMember')
+        AND table_name IN ('User', 'Profile', 'Friendship', 'CosmeticItem', 'League', 'Contest', 'LeagueMember')
     `);
 
     const hasColumn = (tableName: string, columnName: string) =>
@@ -496,6 +508,10 @@ export class PrismaAppRepository implements AppRepository {
         (column) => column.table_name === tableName && column.column_name === columnName
       )?.data_type;
 
+    await this.client.$executeRawUnsafe(`
+      ALTER TABLE "User"
+      ADD COLUMN IF NOT EXISTS "isAdmin" BOOLEAN NOT NULL DEFAULT false
+    `);
     await this.client.$executeRawUnsafe(`
       ALTER TABLE "Profile"
       ADD COLUMN IF NOT EXISTS "credits" DOUBLE PRECISION NOT NULL DEFAULT 100
@@ -615,6 +631,7 @@ export class PrismaAppRepository implements AppRepository {
         id: row.id,
         email: row.email,
         name: row.name,
+        isAdmin: row.isAdmin,
         createdAt: row.createdAt.toISOString()
       },
       profile: {
@@ -647,6 +664,7 @@ export class PrismaAppRepository implements AppRepository {
           id: payload.user.id,
           email: payload.user.email,
           name: payload.user.name,
+          isAdmin: payload.user.isAdmin,
           createdAt: new Date(payload.user.createdAt)
         }
       });
@@ -707,6 +725,14 @@ export class PrismaAppRepository implements AppRepository {
         expiresAt: new Date(payload.expiresAt)
       }
     });
+  }
+
+  async hasAnyAdminUser(): Promise<boolean> {
+    const count = await this.client.user.count({
+      where: { isAdmin: true }
+    });
+
+    return count > 0;
   }
 
   async completeOnboardingProfile(payload: {
@@ -795,6 +821,15 @@ export class PrismaAppRepository implements AppRepository {
     });
   }
 
+  async isUserAdmin(userId: string): Promise<boolean> {
+    const user = await this.client.user.findUnique({
+      where: { id: userId },
+      select: { isAdmin: true }
+    });
+
+    return user?.isAdmin ?? false;
+  }
+
   async getDashboardPayload(userId: string): Promise<DashboardPayload> {
     const [userRow, inventoryRow, cosmeticsRows, badgesRows, contests, leagues, predictions] =
       await Promise.all([
@@ -856,14 +891,8 @@ export class PrismaAppRepository implements AppRepository {
       : [];
     const teams = mapTeams(teamRows).map((team) => normalizeIplTeam(team));
     const contestIds = contests.map((contest) => contest.id);
-    const publicContestIds = contests
-      .filter((contest) => contest.kind === "public")
-      .map((contest) => contest.id);
-    const privateContestIds = contests
-      .filter((contest) => contest.kind === "private")
-      .map((contest) => contest.id);
 
-    const [playerRows, rosterRows, leaderboardRows] = await Promise.all([
+    const [playerRows, rosterRows, leaderboardGroups] = await Promise.all([
       teamIds.length
         ? this.client.player.findMany({
             where: {
@@ -876,34 +905,44 @@ export class PrismaAppRepository implements AppRepository {
       contestIds.length
         ? this.client.roster.findMany({
             where: {
-              OR: [
-                publicContestIds.length
-                  ? {
-                      contestId: {
-                        in: publicContestIds
-                      }
-                    }
-                  : undefined,
-                privateContestIds.length
-                  ? {
-                      contestId: {
-                        in: privateContestIds
-                      },
-                      userId
-                    }
-                  : undefined
-              ].filter(Boolean) as Prisma.RosterWhereInput[]
+              contestId: {
+                in: contestIds
+              },
+              userId
             }
           })
         : Promise.resolve([]),
       contestIds.length
-        ? this.client.leaderboardEntry.findMany({
+        ? Promise.all(
+            contestIds.map((contestId) =>
+              this.client.leaderboardEntry.findMany({
+                where: { contestId },
+                orderBy: [{ rank: "asc" }, { points: "desc" }],
+                take: DASHBOARD_LEADERBOARD_LIMIT
+              })
+            )
+          )
+        : Promise.resolve([])
+    ]);
+    const leaderboardRows = leaderboardGroups.flat();
+    const leaderboardUserIds = [...new Set(leaderboardRows.map((entry) => entry.userId))];
+    const [leaderboardProfileRows, leaderboardUserRows] = await Promise.all([
+      leaderboardUserIds.length
+        ? this.client.profile.findMany({
             where: {
-              contestId: {
-                in: contestIds
+              userId: {
+                in: leaderboardUserIds
               }
-            },
-            orderBy: [{ contestId: "asc" }, { rank: "asc" }]
+            }
+          })
+        : Promise.resolve([]),
+      leaderboardUserIds.length
+        ? this.client.user.findMany({
+            where: {
+              id: {
+                in: leaderboardUserIds
+              }
+            }
           })
         : Promise.resolve([])
     ]);
@@ -917,7 +956,11 @@ export class PrismaAppRepository implements AppRepository {
       teams,
       players: mapPlayers(playerRows),
       rosters: mapRosters(rosterRows),
-      leaderboard: mapLeaderboard(leaderboardRows),
+      leaderboard: withLeaderboardDisplayNames(
+        mapLeaderboard(leaderboardRows),
+        mapProfiles(leaderboardProfileRows),
+        mapUsers(leaderboardUserRows)
+      ),
       questions: predictions.questions,
       answers: predictions.answers,
       inventory: mapInventories([inventoryRow])[0],
@@ -927,10 +970,18 @@ export class PrismaAppRepository implements AppRepository {
   }
 
   async getVisibleContestsForUser(userId: string): Promise<Contest[]> {
-    const [publicContestRows, privateContestRows] = await Promise.all([
+    const [providerMatchCount, publicContestRows, privateContestRows] = await Promise.all([
+      this.client.match.count({
+        where: {
+          id: {
+            startsWith: "provider:"
+          }
+        }
+      }),
       this.client.contest.findMany({
         where: { kind: "public" },
-        orderBy: [{ lockTime: "asc" }]
+        orderBy: [{ lockTime: "asc" }],
+        take: DASHBOARD_PUBLIC_CONTEST_LIMIT
       }),
       this.client.contest.findMany({
         where: {
@@ -939,12 +990,16 @@ export class PrismaAppRepository implements AppRepository {
             OR: [{ visibility: "public" }, { members: { some: { userId } } }]
           }
         },
-        orderBy: [{ lockTime: "asc" }]
+        orderBy: [{ lockTime: "asc" }],
+        take: DASHBOARD_PRIVATE_CONTEST_LIMIT
       })
     ]);
 
+    const publicContests = mapContests(publicContestRows);
     return [
-      ...preferredPublicContests(mapContests(publicContestRows)),
+      ...(providerMatchCount > 0
+        ? publicContests.filter((contest) => contest.id.startsWith("provider:"))
+        : preferredPublicContests(publicContests)),
       ...mapContests(privateContestRows)
     ];
   }
@@ -962,7 +1017,8 @@ export class PrismaAppRepository implements AppRepository {
           select: { id: true }
         }
       },
-      orderBy: [{ name: "asc" }]
+      orderBy: [{ name: "asc" }],
+      take: DASHBOARD_LEAGUE_LIMIT
     });
 
     return mapLeagues(rows);
@@ -972,7 +1028,7 @@ export class PrismaAppRepository implements AppRepository {
     const questionRows = await this.client.predictionQuestion.findMany({
       orderBy: [{ locksAt: "asc" }]
     });
-    const preferred = preferredQuestions(mapQuestions(questionRows));
+    const preferred = preferredQuestions(mapQuestions(questionRows)).slice(0, DASHBOARD_PREDICTION_LIMIT);
     const questionIds = preferred.map((question) => question.id);
     const matchIds = [...new Set(preferred.map((question) => question.matchId))];
     const matchRows = matchIds.length
@@ -1054,11 +1110,37 @@ export class PrismaAppRepository implements AppRepository {
   }
 
   async getContestLeaderboardEntries(contestId: string): Promise<LeaderboardEntry[]> {
-    return mapLeaderboard(
-      await this.client.leaderboardEntry.findMany({
+    const rows = await this.client.leaderboardEntry.findMany({
         where: { contestId },
-        orderBy: [{ rank: "asc" }, { points: "desc" }]
-      })
+        orderBy: [{ rank: "asc" }, { points: "desc" }],
+        take: DASHBOARD_LEADERBOARD_LIMIT
+      });
+    const userIds = [...new Set(rows.map((row) => row.userId))];
+    const [profileRows, userRows] = await Promise.all([
+      userIds.length
+        ? this.client.profile.findMany({
+            where: {
+              userId: {
+                in: userIds
+              }
+            }
+          })
+        : Promise.resolve([]),
+      userIds.length
+        ? this.client.user.findMany({
+            where: {
+              id: {
+                in: userIds
+              }
+            }
+          })
+        : Promise.resolve([])
+    ]);
+
+    return withLeaderboardDisplayNames(
+      mapLeaderboard(rows),
+      mapProfiles(profileRows),
+      mapUsers(userRows)
     );
   }
 
@@ -1140,6 +1222,60 @@ export class PrismaAppRepository implements AppRepository {
       select: { id: true }
     });
     return rows.map((row) => row.id);
+  }
+
+  async getProviderStatus(): Promise<AppStore["provider"]> {
+    const provider = await this.client.providerState.findUnique({
+      where: { id: "default" },
+      select: {
+        status: true,
+        syncedAt: true,
+        lastAttemptedAt: true
+      }
+    });
+
+    return {
+      status: (provider?.status as AppStore["provider"]["status"] | undefined) ?? "idle",
+      syncedAt: provider?.syncedAt.toISOString() ?? new Date(0).toISOString(),
+      lastAttemptedAt: provider?.lastAttemptedAt.toISOString() ?? new Date(0).toISOString()
+    };
+  }
+
+  async getProviderSyncContext() {
+    const [provider, providerMatchCount, nextMatch] =
+      await Promise.all([
+        this.getProviderStatus(),
+        this.client.match.count({
+          where: {
+            id: {
+              startsWith: "provider:"
+            }
+          }
+        }),
+        this.client.match.findFirst({
+          where: {
+            id: {
+              startsWith: "provider:"
+            },
+            state: "scheduled",
+            startsAt: {
+              gt: new Date()
+            }
+          },
+          orderBy: {
+            startsAt: "asc"
+          },
+          select: {
+            startsAt: true
+          }
+        })
+      ]);
+
+    return {
+      provider,
+      hasProviderFeed: providerMatchCount > 0,
+      nextUpcomingProviderMatchStartsAt: nextMatch?.startsAt.toISOString() ?? null
+    };
   }
 
   async createLeagueRecord(userId: string, input: CreateLeagueInput): Promise<League> {
@@ -2251,7 +2387,7 @@ export class PrismaAppRepository implements AppRepository {
 
     const userCount = await this.client.user.count();
     if (userCount === 0) {
-      await this.replaceStore(seedStore);
+      await this.seedDatabase(seedStore);
       return;
     }
 
@@ -2267,150 +2403,7 @@ export class PrismaAppRepository implements AppRepository {
     });
   }
 
-  async loadStore(): Promise<AppStore> {
-    const [
-      sessions,
-      credentials,
-      users,
-      profiles,
-      friendships,
-      invites,
-      teams,
-      players,
-      matches,
-      contests,
-      leagues,
-      rosters,
-      scoreEvents,
-      leaderboard,
-      questions,
-      answers,
-      results,
-      cosmetics,
-      cosmeticUnlocks,
-      inventories,
-      badges,
-      xpTransactions,
-      provider
-    ] = await Promise.all([
-      this.client.session.findMany(),
-      this.client.authCredential.findMany(),
-      this.client.user.findMany(),
-      this.client.profile.findMany({
-        select: {
-          userId: true,
-          username: true,
-          bio: true,
-          favoriteTeamId: true,
-          credits: true,
-          xp: true,
-          level: true,
-          streak: true,
-          onboardingCompleted: true,
-          equippedCosmetics: true
-        }
-      }),
-      this.client.friendship.findMany({
-        select: {
-          id: true,
-          requesterId: true,
-          addresseeId: true,
-          status: true,
-          createdAt: true
-        }
-      }),
-      this.client.invite.findMany(),
-      this.client.team.findMany(),
-      this.client.player.findMany(),
-      this.client.match.findMany(),
-      this.client.contest.findMany(),
-      this.client.league.findMany({
-        include: {
-          members: {
-            select: {
-              userId: true
-            }
-          },
-          contests: {
-            select: {
-              id: true
-            }
-          }
-        }
-      }),
-      this.client.roster.findMany(),
-      this.client.fantasyScoreEvent.findMany(),
-      this.client.leaderboardEntry.findMany(),
-      this.client.predictionQuestion.findMany(),
-      this.client.predictionAnswer.findMany(),
-      this.client.predictionResult.findMany(),
-      this.client.cosmeticItem.findMany({
-        select: {
-          id: true,
-          name: true,
-          description: true,
-          category: true,
-          rarity: true,
-          themeToken: true,
-          gameplayAffecting: true,
-          transferable: true,
-          redeemable: true,
-          resaleValue: true
-        }
-      }),
-      this.client.cosmeticUnlock.findMany(),
-      this.client.userInventory.findMany(),
-      this.client.badge.findMany(),
-      this.client.xPTransaction.findMany(),
-      this.client.providerState.findUnique({
-        where: { id: "default" },
-        select: {
-          id: true,
-          status: true,
-          syncedAt: true,
-          lastAttemptedAt: true
-        }
-      }) as Promise<ProviderStateRow | null>
-    ]);
-
-    return {
-      sessions: mapSessions(sessions),
-      credentials: mapCredentials(credentials),
-      users: mapUsers(users),
-      profiles: mapProfiles(profiles),
-      friendships: mapFriendships(friendships),
-      invites: mapInvites(invites),
-      teams: mapTeams(teams),
-      players: mapPlayers(players),
-      matches: mapMatches(matches),
-      contests: mapContests(contests),
-      leagues: mapLeagues(leagues),
-      rosters: mapRosters(rosters),
-      scoreEvents: mapScoreEvents(scoreEvents),
-      leaderboard: mapLeaderboard(leaderboard),
-      questions: mapQuestions(questions),
-      answers: mapAnswers(answers),
-      results: mapResults(results),
-      cosmetics: mapCosmetics(cosmetics),
-      cosmeticUnlocks: mapUnlocks(cosmeticUnlocks),
-      inventories: mapInventories(inventories),
-      badges: mapBadges(badges),
-      xpTransactions: mapXpTransactions(xpTransactions),
-      provider: provider
-        ? {
-            status: provider.status as AppStore["provider"]["status"],
-            syncedAt: provider.syncedAt.toISOString(),
-            lastAttemptedAt: provider.lastAttemptedAt.toISOString()
-          }
-        : {
-            status: "idle",
-            syncedAt: new Date(0).toISOString(),
-            lastAttemptedAt: new Date(0).toISOString()
-          }
-    };
-  }
-
-  async replaceStore(store: AppStore): Promise<void> {
+  private async seedDatabase(store: AppStore): Promise<void> {
     await this.client.$transaction(async (tx) => {
       await tx.session.deleteMany();
       await tx.authCredential.deleteMany();
@@ -2442,6 +2435,7 @@ export class PrismaAppRepository implements AppRepository {
             id: user.id,
             email: user.email,
             name: user.name,
+            isAdmin: user.isAdmin,
             createdAt: new Date(user.createdAt)
           }))
         });

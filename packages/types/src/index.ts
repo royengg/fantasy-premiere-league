@@ -17,12 +17,12 @@ export type CosmeticCategory =
   | "badge-title";
 export type CosmeticRarity = "common" | "rare" | "epic";
 export type PlayerNationality = "indian-capped" | "indian-uncapped" | "overseas";
-export type FormIndicator = "hot" | "good" | "average" | "cold";
 
 export interface User {
   id: ID;
   email: string;
   name: string;
+  isAdmin: boolean;
   createdAt: string;
 }
 
@@ -89,17 +89,6 @@ export interface Player {
   selectionPercent: number;
 }
 
-export interface PlayerStats {
-  playerId: ID;
-  lastFiveMatches: number[];
-  totalPoints: number;
-  averagePoints: number;
-  highestScore: number;
-  vsTeam: Record<ID, { matches: number; avgPoints: number }>;
-  venueRecord: Record<string, { matches: number; avgPoints: number }>;
-  form: FormIndicator;
-}
-
 export interface Match {
   id: ID;
   homeTeamId: ID;
@@ -107,37 +96,6 @@ export interface Match {
   startsAt: string;
   venue: string;
   state: MatchState;
-}
-
-export interface LiveMatchData {
-  matchId: ID;
-  innings: 1 | 2;
-  currentOver: number;
-  currentBall: number;
-  battingTeamId: ID;
-  bowlingTeamId: ID;
-  score: number;
-  wickets: number;
-  overs: string;
-  currentBatsmen: { playerId: ID; runs: number; balls: number }[];
-  currentBowler: { playerId: ID; overs: number; wickets: number; runs: number };
-  partnership: { runs: number; balls: number };
-  requiredRunRate?: number;
-  currentRunRate: number;
-  recentBalls: BallEvent[];
-  target?: number;
-}
-
-export interface BallEvent {
-  over: number;
-  ball: number;
-  runs: number;
-  type: "run" | "boundary" | "six" | "wicket" | "wide" | "no-ball" | "dot";
-  batsmanId: ID;
-  bowlerId: ID;
-  points: number;
-  description: string;
-  timestamp: string;
 }
 
 export interface RosterRules {
@@ -205,16 +163,6 @@ export interface Roster {
   hasUncappedPlayer: boolean;
 }
 
-export interface LiveRosterPoints {
-  rosterId: ID;
-  userId: ID;
-  totalPoints: number;
-  projectedPoints: number;
-  rank: number;
-  previousRank: number;
-  playerPoints: { playerId: ID; points: number; projectedPoints: number; recentEvents: BallEvent[] }[];
-}
-
 export interface FantasyScoreEvent {
   id: ID;
   matchId: ID;
@@ -236,6 +184,7 @@ export interface LeaderboardEntry {
   id: ID;
   contestId: ID;
   userId: ID;
+  displayName?: string;
   points: number;
   rank: number;
   previousRank: number;

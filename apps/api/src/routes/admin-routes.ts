@@ -2,14 +2,14 @@ import { Router, type Router as ExpressRouter } from "express";
 
 import { adminCorrectionSchema, settlePredictionSchema } from "@fantasy-cricket/validators";
 
-import { assertAdminKey, sendError, type ApiDependencies } from "../lib/http.js";
+import { authenticatedAdminUserId, sendError, type ApiDependencies } from "../lib/http.js";
 
-export function createAdminRouter({ adminService, env, gameService, realtime }: ApiDependencies): ExpressRouter {
+export function createAdminRouter({ adminService, authService, gameService, realtime }: ApiDependencies): ExpressRouter {
   const router = Router();
 
   router.post("/provider-sync", async (req, res) => {
     try {
-      assertAdminKey(req, env);
+      await authenticatedAdminUserId(req, authService);
     } catch (error) {
       sendError(res, 403, error, "Provider sync failed.");
       return;
@@ -30,7 +30,7 @@ export function createAdminRouter({ adminService, env, gameService, realtime }: 
     }
 
     try {
-      assertAdminKey(req, env);
+      await authenticatedAdminUserId(req, authService);
     } catch (error) {
       sendError(res, 403, error, "Correction failed.");
       return;
@@ -56,7 +56,7 @@ export function createAdminRouter({ adminService, env, gameService, realtime }: 
     }
 
     try {
-      assertAdminKey(req, env);
+      await authenticatedAdminUserId(req, authService);
     } catch (error) {
       sendError(res, 403, error, "Settlement failed.");
       return;

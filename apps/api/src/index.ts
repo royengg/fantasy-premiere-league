@@ -3,11 +3,10 @@ import { createServer } from "node:http";
 import express from "express";
 
 import { configureApp } from "./app.js";
-import { createSeedStore } from "./data/seed.js";
+import { createBootstrapStore } from "./data/seed.js";
 import { loadEnv } from "./lib/env.js";
 import type { ApiDependencies } from "./lib/http.js";
 import { createRealtimeHub } from "./lib/socket.js";
-import type { AppRepository } from "./repositories/app-repository.js";
 import { PrismaAppRepository } from "./repositories/prisma-app-repository.js";
 import { AdminService } from "./services/admin-service.js";
 import { AuthService } from "./services/auth-service.js";
@@ -15,10 +14,10 @@ import { GameService } from "./services/game-service.js";
 import { ProviderSyncScheduler } from "./services/provider-sync-scheduler.js";
 
 const env = loadEnv();
-const seedStore = createSeedStore();
+const seedStore = createBootstrapStore();
 
 async function createRuntime(): Promise<{
-  repository: AppRepository;
+  repository: PrismaAppRepository;
   authService: AuthService;
   gameService: GameService;
 }> {

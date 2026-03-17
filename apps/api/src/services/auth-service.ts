@@ -8,42 +8,11 @@ import type {
   AuthRegisterInput
 } from "@fantasy-cricket/validators";
 
-import type { AppStore, AuthCredential } from "../data/store.js";
 import { hashPassword, verifyPassword } from "../lib/password.js";
-import type { AppRepository } from "../repositories/app-repository.js";
+import type { AuthRuntimeRepository } from "../repositories/runtime-repository.js";
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const STARTER_CREDITS = 100;
-
-interface PrismaAuthRuntimeRepository {
-  listProfileUsernamesByBase: (baseUsername: string) => Promise<string[]>;
-  findUserLoginRecord: (email: string) => Promise<{
-    user: User;
-    profile: Profile;
-    passwordHash: string;
-  } | null>;
-  createRegisteredUserRecord: (payload: {
-    user: User;
-    profile: Profile;
-    passwordHash: string;
-    sessionHash: string;
-    sessionCreatedAt: string;
-    sessionExpiresAt: string;
-  }) => Promise<void>;
-  createHashedSession: (payload: {
-    userId: string;
-    sessionHash: string;
-    createdAt: string;
-    expiresAt: string;
-  }) => Promise<void>;
-  completeOnboardingProfile: (payload: {
-    userId: string;
-    username: string;
-    favoriteTeamId: string;
-  }) => Promise<Profile>;
-  findActiveSessionUserId: (sessionHash: string, now: string) => Promise<string | null>;
-  deleteSessionByHash: (sessionHash: string) => Promise<void>;
-}
 
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
@@ -57,88 +26,37 @@ function createRawSessionToken() {
   return randomBytes(32).toString("base64url");
 }
 
-function hasPrismaAuthRuntimeRepository(
-  repository: AppRepository
-): repository is AppRepository & PrismaAuthRuntimeRepository {
-  return typeof (repository as Partial<PrismaAuthRuntimeRepository>).findUserLoginRecord === "function";
-}
-
 function usernameBaseFromName(name: string) {
   const alphanumeric = name.replace(/[^a-zA-Z0-9]/g, "");
   return (alphanumeric.slice(0, 16) || "CricketFan").replace(/^\d+/, "fan");
 }
 
 export class AuthService {
-  constructor(private readonly repository: AppRepository) {}
+  constructor(private readonly repository: AuthRuntimeRepository) {}
 
   async register(input: AuthRegisterInput): Promise<AuthResponse> {
-    if (hasPrismaAuthRuntimeRepository(this.repository)) {
-      const email = normalizeEmail(input.email);
-      const existing = await this.repository.findUserLoginRecord(email);
-      if (existing) {
-        throw new Error("An account with this email already exists.");
-      }
-
-      const now = new Date();
-      const userId = crypto.randomUUID();
-      const user: User = {
-        id: userId,
-        email,
-        name: input.name.trim(),
-        createdAt: now.toISOString()
-      };
-      const username = await this.ensureUniqueUsernameForRuntime(usernameBaseFromName(user.name));
-      const profile: Profile = {
-        userId,
-        username,
-        credits: STARTER_CREDITS,
-        xp: 0,
-        level: levelFromXp(0),
-        streak: 0,
-        onboardingCompleted: false,
-        equippedCosmetics: {}
-      };
-      const rawSessionToken = createRawSessionToken();
-
-      await this.repository.createRegisteredUserRecord({
-        user,
-        profile,
-        passwordHash: await hashPassword(input.password),
-        sessionHash: hashSessionToken(rawSessionToken),
-        sessionCreatedAt: now.toISOString(),
-        sessionExpiresAt: new Date(now.getTime() + SESSION_TTL_MS).toISOString()
-      });
-
-      return this.authResponse(
-        {
-          token: rawSessionToken,
-          userId,
-          createdAt: now.toISOString(),
-          expiresAt: new Date(now.getTime() + SESSION_TTL_MS).toISOString()
-        },
-        profile
-      );
-    }
-
-    const store = await this.repository.loadStore();
     const email = normalizeEmail(input.email);
-
-    if (store.users.some((user) => normalizeEmail(user.email) === email)) {
+    const [existing, hasAdminUser] = await Promise.all([
+      this.repository.findUserLoginRecord(email),
+      this.repository.hasAnyAdminUser()
+    ]);
+    if (existing) {
       throw new Error("An account with this email already exists.");
     }
 
+    const now = new Date();
     const userId = crypto.randomUUID();
-    const now = new Date().toISOString();
     const user: User = {
       id: userId,
       email,
       name: input.name.trim(),
-      createdAt: now
+      isAdmin: !hasAdminUser,
+      createdAt: now.toISOString()
     };
-
+    const username = await this.ensureUniqueUsername(usernameBaseFromName(user.name));
     const profile: Profile = {
       userId,
-      username: this.ensureUniqueUsername(store, usernameBaseFromName(user.name)),
+      username,
       credits: STARTER_CREDITS,
       xp: 0,
       level: levelFromXp(0),
@@ -146,114 +64,70 @@ export class AuthService {
       onboardingCompleted: false,
       equippedCosmetics: {}
     };
+    const rawSessionToken = createRawSessionToken();
+    const expiresAt = new Date(now.getTime() + SESSION_TTL_MS).toISOString();
 
-    const credential: AuthCredential = {
-      userId,
+    await this.repository.createRegisteredUserRecord({
+      user,
+      profile,
       passwordHash: await hashPassword(input.password),
-      updatedAt: now
-    };
-
-    store.users.push(user);
-    store.credentials.push(credential);
-    store.profiles.push(profile);
-    store.inventories.push({
-      userId,
-      cosmeticIds: [],
-      badgeIds: [],
-      equipped: {}
+      sessionHash: hashSessionToken(rawSessionToken),
+      sessionCreatedAt: now.toISOString(),
+      sessionExpiresAt: expiresAt
     });
 
-    const session = this.createSession(store, userId);
-    await this.repository.replaceStore(store);
-
-    return this.authResponse(session, profile);
+    return this.authResponse(
+      {
+        token: rawSessionToken,
+        userId,
+        createdAt: now.toISOString(),
+        expiresAt
+      },
+      profile
+    );
   }
 
   async login(input: AuthLoginInput): Promise<AuthResponse> {
-    if (hasPrismaAuthRuntimeRepository(this.repository)) {
-      const email = normalizeEmail(input.email);
-      const existing = await this.repository.findUserLoginRecord(email);
-
-      if (!existing) {
-        throw new Error("Invalid email or password.");
-      }
-
-      const passwordMatches = await verifyPassword(input.password, existing.passwordHash);
-      if (!passwordMatches) {
-        throw new Error("Invalid email or password.");
-      }
-
-      const now = new Date();
-      const rawSessionToken = createRawSessionToken();
-      await this.repository.createHashedSession({
-        userId: existing.user.id,
-        sessionHash: hashSessionToken(rawSessionToken),
-        createdAt: now.toISOString(),
-        expiresAt: new Date(now.getTime() + SESSION_TTL_MS).toISOString()
-      });
-
-      return this.authResponse(
-        {
-          token: rawSessionToken,
-          userId: existing.user.id,
-          createdAt: now.toISOString(),
-          expiresAt: new Date(now.getTime() + SESSION_TTL_MS).toISOString()
-        },
-        existing.profile
-      );
-    }
-
-    const store = await this.repository.loadStore();
     const email = normalizeEmail(input.email);
-    const user = store.users.find((entry) => normalizeEmail(entry.email) === email);
+    const existing = await this.repository.findUserLoginRecord(email);
 
-    if (!user) {
+    if (!existing) {
       throw new Error("Invalid email or password.");
     }
 
-    const credential = this.getCredential(store, user.id);
-    const passwordMatches = await verifyPassword(input.password, credential.passwordHash);
+    const passwordMatches = await verifyPassword(input.password, existing.passwordHash);
     if (!passwordMatches) {
       throw new Error("Invalid email or password.");
     }
 
-    const profile = this.getProfile(store, user.id);
-    const session = this.createSession(store, user.id);
-    await this.repository.replaceStore(store);
+    const now = new Date();
+    const rawSessionToken = createRawSessionToken();
+    const expiresAt = new Date(now.getTime() + SESSION_TTL_MS).toISOString();
 
-    return this.authResponse(session, profile);
+    await this.repository.createHashedSession({
+      userId: existing.user.id,
+      sessionHash: hashSessionToken(rawSessionToken),
+      createdAt: now.toISOString(),
+      expiresAt
+    });
+
+    return this.authResponse(
+      {
+        token: rawSessionToken,
+        userId: existing.user.id,
+        createdAt: now.toISOString(),
+        expiresAt
+      },
+      existing.profile
+    );
   }
 
   async completeOnboarding(userId: string, input: AuthOnboardingInput): Promise<Profile> {
-    if (hasPrismaAuthRuntimeRepository(this.repository)) {
-      return this.repository.completeOnboardingProfile({
-        userId,
-        username: input.username.trim(),
-        favoriteTeamId: input.favoriteTeamId
-      });
-    }
-
-    const store = await this.repository.loadStore();
-    const profile = this.getProfile(store, userId);
-    const username = input.username.trim();
-
-    if (store.teams.every((team) => team.id !== input.favoriteTeamId)) {
-      throw new Error("Favorite team not found.");
-    }
-
-    const duplicateProfile = store.profiles.find(
-      (entry) => entry.username.toLowerCase() === username.toLowerCase() && entry.userId !== userId
-    );
-    if (duplicateProfile) {
-      throw new Error("Username is already taken.");
-    }
-
-    profile.username = username;
-    profile.favoriteTeamId = input.favoriteTeamId;
-    profile.onboardingCompleted = true;
-
-    await this.repository.replaceStore(store);
-    return profile;
+    return this.repository.completeOnboardingProfile({
+      userId,
+      username: input.username.trim(),
+      favoriteTeamId: input.favoriteTeamId
+    });
   }
 
   async authenticate(token: string | null | undefined): Promise<string> {
@@ -261,31 +135,21 @@ export class AuthService {
       throw new Error("Authentication required.");
     }
 
-    if (hasPrismaAuthRuntimeRepository(this.repository)) {
-      const userId = await this.repository.findActiveSessionUserId(
-        hashSessionToken(token),
-        new Date().toISOString()
-      );
-      if (!userId) {
-        throw new Error("Session expired.");
-      }
-
-      return userId;
-    }
-
-    const store = await this.repository.loadStore();
-    const hadExpiredSessions = this.pruneExpiredSessions(store);
-    const session = store.sessions.find((entry) => entry.token === token);
-
-    if (hadExpiredSessions) {
-      await this.repository.replaceStore(store);
-    }
-
-    if (!session) {
+    const userId = await this.repository.findActiveSessionUserId(
+      hashSessionToken(token),
+      new Date().toISOString()
+    );
+    if (!userId) {
       throw new Error("Session expired.");
     }
 
-    return session.userId;
+    return userId;
+  }
+
+  async assertAdmin(userId: string): Promise<void> {
+    if (!(await this.repository.isUserAdmin(userId))) {
+      throw new Error("Admin authorization failed.");
+    }
   }
 
   async revoke(token: string | null | undefined): Promise<void> {
@@ -293,19 +157,7 @@ export class AuthService {
       return;
     }
 
-    if (hasPrismaAuthRuntimeRepository(this.repository)) {
-      await this.repository.deleteSessionByHash(hashSessionToken(token));
-      return;
-    }
-
-    const store = await this.repository.loadStore();
-    const nextSessions = store.sessions.filter((entry) => entry.token !== token);
-    if (nextSessions.length === store.sessions.length) {
-      return;
-    }
-
-    store.sessions = nextSessions;
-    await this.repository.replaceStore(store);
+    await this.repository.deleteSessionByHash(hashSessionToken(token));
   }
 
   private authResponse(session: AuthSession, profile: Profile): AuthResponse {
@@ -318,40 +170,7 @@ export class AuthService {
     };
   }
 
-  private createSession(store: AppStore, userId: string): AuthSession {
-    const now = new Date();
-    const session: AuthSession = {
-      token: crypto.randomUUID(),
-      userId,
-      createdAt: now.toISOString(),
-      expiresAt: new Date(now.getTime() + SESSION_TTL_MS).toISOString()
-    };
-
-    store.sessions.push(session);
-    return session;
-  }
-
-  private ensureUniqueUsername(store: AppStore, baseUsername: string) {
-    const normalizedBase = baseUsername || "CricketFan";
-    const existing = new Set(store.profiles.map((profile) => profile.username.toLowerCase()));
-
-    if (!existing.has(normalizedBase.toLowerCase())) {
-      return normalizedBase;
-    }
-
-    let attempt = 1;
-    while (existing.has(`${normalizedBase}${attempt}`.toLowerCase())) {
-      attempt += 1;
-    }
-
-    return `${normalizedBase}${attempt}`;
-  }
-
-  private async ensureUniqueUsernameForRuntime(baseUsername: string) {
-    if (!hasPrismaAuthRuntimeRepository(this.repository)) {
-      return baseUsername;
-    }
-
+  private async ensureUniqueUsername(baseUsername: string) {
     const normalizedBase = baseUsername || "CricketFan";
     const usernames = await this.repository.listProfileUsernamesByBase(normalizedBase);
     const existing = new Set(usernames.map((username) => username.toLowerCase()));
@@ -366,37 +185,5 @@ export class AuthService {
     }
 
     return `${normalizedBase}${attempt}`;
-  }
-
-  private getCredential(store: AppStore, userId: string) {
-    const credential = store.credentials.find((entry) => entry.userId === userId);
-    if (!credential) {
-      throw new Error("Auth credentials are missing.");
-    }
-
-    return credential;
-  }
-
-  private getProfile(store: AppStore, userId: string) {
-    const profile = store.profiles.find((entry) => entry.userId === userId);
-    if (!profile) {
-      throw new Error("Profile is missing.");
-    }
-
-    return profile;
-  }
-
-  private pruneExpiredSessions(store: AppStore): boolean {
-    const now = Date.now();
-    const nextSessions = store.sessions.filter(
-      (session) => new Date(session.expiresAt).getTime() > now
-    );
-
-    const changed = nextSessions.length !== store.sessions.length;
-    if (changed) {
-      store.sessions = nextSessions;
-    }
-
-    return changed;
   }
 }

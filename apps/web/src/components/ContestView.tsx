@@ -368,7 +368,7 @@ function ContestCard({ contest, match, homeTeam, awayTeam, players, roster, lead
                         <span className={`w-8 h-8 rounded-full flex items-center justify-center font-bold ${i === 0 ? "bg-yellow-500/20 text-yellow-400" : i === 1 ? "bg-slate-400/20 text-slate-400" : i === 2 ? "bg-amber-600/20 text-amber-600" : "bg-surface text-text-muted"}`}>
                           {e.rank}
                         </span>
-                        <span className="font-medium">{e.userId.slice(0, 8)}...</span>
+                        <span className="font-medium">{e.displayName ?? `${e.userId.slice(0, 8)}...`}</span>
                       </div>
                       <span className="font-bold font-mono text-lg">{e.points.toFixed(1)}</span>
                     </div>
