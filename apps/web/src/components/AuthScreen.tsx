@@ -12,8 +12,8 @@ interface AuthScreenProps {
 export function AuthScreen({ onLogin, onRegister, notice }: AuthScreenProps) {
   const [mode, setMode] = useState<AuthMode>("login");
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("captain@cricketclub.test");
-  const [password, setPassword] = useState("password123");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -151,15 +151,15 @@ export function AuthScreen({ onLogin, onRegister, notice }: AuthScreenProps) {
               <label className="text-xs font-semibold text-text-muted uppercase tracking-wider">
                 Email
               </label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full mt-1.5 h-12 px-4 bg-surface border border-border rounded-xl text-text placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors"
-                placeholder="captain@cricketclub.test"
-                required
-              />
-            </div>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full mt-1.5 h-12 px-4 bg-surface border border-border rounded-xl text-text placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors"
+                  placeholder="you@example.com"
+                  required
+                />
+              </div>
 
             <div>
               <label className="text-xs font-semibold text-text-muted uppercase tracking-wider">

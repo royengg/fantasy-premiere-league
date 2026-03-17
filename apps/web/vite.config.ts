@@ -12,6 +12,7 @@ export default defineConfig({
     alias: {
       "@fantasy-cricket/types": path.resolve(root, "../../packages/types/src/index.ts"),
       "@fantasy-cricket/api-client": path.resolve(root, "../../packages/api-client/src/index.ts"),
+      "@fantasy-cricket/domain": path.resolve(root, "../../packages/domain/src/index.ts"),
       "@": path.resolve(root, "./src")
     }
   },
@@ -19,4 +20,3 @@ export default defineConfig({
     port: 5173
   }
 });
-

@@ -31,6 +31,7 @@ export interface AuthCredential {
 export interface ProviderSyncState {
   status: "idle" | "syncing" | "ready";
   syncedAt: string;
+  lastAttemptedAt: string;
 }
 
 export interface AppStore {

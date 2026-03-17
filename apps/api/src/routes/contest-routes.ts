@@ -17,7 +17,7 @@ export function createContestRouter({ authService, gameService, realtime }: ApiD
     }
 
     try {
-      res.json((await gameService.getDashboard(userId)).contests);
+      res.json(await gameService.getContests(userId));
     } catch (error) {
       sendError(res, 404, error, "Could not load contests.");
     }
@@ -40,9 +40,7 @@ export function createContestRouter({ authService, gameService, realtime }: ApiD
 
     try {
       const roster = await gameService.submitRoster(userId, req.params.contestId, parsed.data);
-      const leaderboard = (await gameService
-        .getDashboard(userId))
-        .leaderboard.filter((entry) => entry.contestId === req.params.contestId);
+      const leaderboard = await gameService.getContestLeaderboard(req.params.contestId);
       const subscriberIds = await gameService.contestSubscriberIds(req.params.contestId);
 
       realtime.emitLeaderboard(subscriberIds, req.params.contestId, leaderboard);

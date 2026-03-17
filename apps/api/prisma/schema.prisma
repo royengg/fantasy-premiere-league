@@ -23,6 +23,7 @@ model User {
   results      PredictionResult[]
   xpLedger     XPTransaction[]
   unlocks      CosmeticUnlock[]
+  leagueMemberships LeagueMember[]
 }
 
 model Profile {
@@ -30,6 +31,7 @@ model Profile {
   username           String  @unique
   bio                String?
   favoriteTeamId     String?
+  credits            Float   @default(100)
   xp                 Int     @default(0)
   level              Int     @default(1)
   streak             Int     @default(0)
@@ -60,10 +62,15 @@ model Friendship {
   id          String   @id
   requesterId String
   addresseeId String
+  pairKey     String   @unique
   status      String
   createdAt   DateTime @default(now())
   requester   User     @relation("FriendshipRequester", fields: [requesterId], references: [id], onDelete: Cascade)
   addressee   User     @relation("FriendshipAddressee", fields: [addresseeId], references: [id], onDelete: Cascade)
+
+  @@unique([requesterId, addresseeId])
+  @@index([requesterId])
+  @@index([addresseeId])
 }
 
 model Invite {
@@ -115,6 +122,11 @@ model Contest {
   iplRules    Json
   lockTime    DateTime
   rewards     Json
+  league      League?  @relation(fields: [leagueId], references: [id], onDelete: SetNull)
+  rosters     Roster[]
+
+  @@index([leagueId])
+  @@index([matchId])
 }
 
 model League {
@@ -124,9 +136,20 @@ model League {
   visibility  String
   createdBy   String
   inviteCode  String   @unique
-  memberIds   String[]
-  contestIds  String[]
   bannerStyle String
+  members     LeagueMember[]
+  contests    Contest[]
+}
+
+model LeagueMember {
+  leagueId  String
+  userId    String
+  joinedAt  DateTime @default(now())
+  league    League   @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([leagueId, userId])
+  @@index([userId])
 }
 
 model Roster {
@@ -142,6 +165,7 @@ model Roster {
   locked              Boolean
   hasUncappedPlayer   Boolean
   user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contest             Contest  @relation(fields: [contestId], references: [id], onDelete: Cascade)
 
   @@unique([contestId, userId])
   @@index([contestId])
@@ -226,7 +250,7 @@ model CosmeticItem {
   gameplayAffecting Boolean  @default(false)
   transferable      Boolean  @default(false)
   redeemable        Boolean  @default(false)
-  resaleValue       Boolean  @default(false)
+  resaleValue       Float    @default(0)
   unlocks           CosmeticUnlock[]
 }
 
@@ -262,12 +286,13 @@ model XPTransaction {
   source      String
   amount      Int
   description String
-  createdAt   DateTime
+  createdAt   DateTime @default(now())
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model ProviderState {
-  id       String   @id
-  status   String
-  syncedAt DateTime
+  id              String   @id
+  status          String
+  syncedAt        DateTime
+  lastAttemptedAt DateTime @default(now())
 }

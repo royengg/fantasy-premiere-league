@@ -14,6 +14,8 @@ import type {
   PlayerNationality
 } from "@fantasy-cricket/types";
 
+export * from "./ipl-teams";
+
 export const defaultRosterRules: RosterRules = {
   totalPlayers: 11,
   minByRole: {
@@ -128,7 +130,10 @@ export function createInviteCode(name: string): string {
     .slice(0, 4)
     .padEnd(4, "X");
 
-  const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const bytes = new Uint8Array(4);
+  globalThis.crypto.getRandomValues(bytes);
+  const suffix = Array.from(bytes, (value) => alphabet[value % alphabet.length]).join("");
   return `${prefix}${suffix}`;
 }
 

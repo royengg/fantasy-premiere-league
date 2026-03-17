@@ -17,7 +17,7 @@ export function createLeagueRouter({ authService, gameService, realtime }: ApiDe
     }
 
     try {
-      res.json((await gameService.getDashboard(userId)).leagues);
+      res.json(await gameService.getLeagues(userId));
     } catch (error) {
       sendError(res, 404, error, "Could not load leagues.");
     }

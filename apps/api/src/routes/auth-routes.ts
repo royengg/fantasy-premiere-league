@@ -12,11 +12,24 @@ import {
   sendError,
   type ApiDependencies
 } from "../lib/http.js";
+import { createFixedWindowRateLimiter } from "../lib/rate-limit.js";
+
+const loginRateLimit = createFixedWindowRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 8,
+  message: "Too many sign-in attempts. Try again later."
+});
+
+const registerRateLimit = createFixedWindowRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  message: "Too many registrations from this address. Try again later."
+});
 
 export function createAuthRouter({ authService }: ApiDependencies): ExpressRouter {
   const router = Router();
 
-  router.post("/register", async (req, res) => {
+  router.post("/register", registerRateLimit, async (req, res) => {
     const parsed = authRegisterSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid registration payload." });
@@ -31,7 +44,7 @@ export function createAuthRouter({ authService }: ApiDependencies): ExpressRoute
     }
   });
 
-  router.post("/login", async (req, res) => {
+  router.post("/login", loginRateLimit, async (req, res) => {
     const parsed = authLoginSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid login payload." });

@@ -16,6 +16,17 @@ export interface ApiClientOptions {
   getAdminKey?: () => string | null;
 }
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 async function request<T>(
   baseUrl: string,
   path: string,
@@ -42,8 +53,10 @@ async function request<T>(
   });
 
   if (!response.ok) {
-    const body = await response.json().catch(() => ({ message: "Request failed." }));
-    throw new Error(body.message ?? "Request failed.");
+    const body = await response
+      .json()
+      .catch(() => ({ message: "Request failed.", code: undefined as string | undefined }));
+    throw new ApiError(body.message ?? "Request failed.", response.status, body.code);
   }
 
   if (response.status === 204) {

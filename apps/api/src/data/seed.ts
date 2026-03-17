@@ -44,11 +44,12 @@ export function createSeedStore(): AppStore {
       {
         userId: "user-1",
         username: "AishaCovers",
+        credits: 100,
         xp: 180,
         level: 2,
         streak: 2,
         onboardingCompleted: true,
-        favoriteTeamId: "team-ben",
+        favoriteTeamId: "team-mi",
         equippedCosmetics: {
           "profile-theme": "cos-theme-saffron"
         }
@@ -56,11 +57,12 @@ export function createSeedStore(): AppStore {
       {
         userId: "user-2",
         username: "LateCutRehan",
+        credits: 5,
         xp: 110,
         level: 2,
         streak: 1,
         onboardingCompleted: true,
-        favoriteTeamId: "team-mum",
+        favoriteTeamId: "team-csk",
         equippedCosmetics: {}
       }
     ],
@@ -84,48 +86,48 @@ export function createSeedStore(): AppStore {
     ],
     teams: [
       {
-        id: "team-ben",
-        name: "Bengaluru Blaze",
-        shortName: "BEN",
-        city: "Bengaluru"
+        id: "team-mi",
+        name: "Mumbai Indians",
+        shortName: "MI",
+        city: "Mumbai"
       },
       {
-        id: "team-mum",
-        name: "Mumbai Tides",
-        shortName: "MUM",
-        city: "Mumbai"
+        id: "team-csk",
+        name: "Chennai Super Kings",
+        shortName: "CSK",
+        city: "Chennai"
       }
     ],
     players: [
-      { id: "p1", name: "Arjun Rao", teamId: "team-ben", role: "WK", credits: 9, rating: 88, nationality: "indian-capped", selectionPercent: 45 },
-      { id: "p2", name: "Neel Sharma", teamId: "team-ben", role: "BAT", credits: 9.5, rating: 93, nationality: "indian-capped", selectionPercent: 78 },
-      { id: "p3", name: "Rohan Iyer", teamId: "team-ben", role: "BAT", credits: 8.5, rating: 84, nationality: "indian-capped", selectionPercent: 52 },
-      { id: "p4", name: "Kabir Sen", teamId: "team-ben", role: "AR", credits: 9, rating: 90, nationality: "indian-capped", selectionPercent: 67 },
-      { id: "p5", name: "Dev Malhotra", teamId: "team-ben", role: "BOWL", credits: 8.5, rating: 86, nationality: "indian-capped", selectionPercent: 41 },
-      { id: "p6", name: "Vivaan Patel", teamId: "team-ben", role: "BOWL", credits: 8, rating: 81, nationality: "indian-uncapped", selectionPercent: 23 },
-      { id: "p7", name: "Ishan Batra", teamId: "team-ben", role: "AR", credits: 8.5, rating: 82, nationality: "indian-capped", selectionPercent: 38 },
-      { id: "p8", name: "Aarav Mehta", teamId: "team-mum", role: "WK", credits: 8.5, rating: 85, nationality: "indian-capped", selectionPercent: 56 },
-      { id: "p9", name: "Samar Joshi", teamId: "team-mum", role: "BAT", credits: 9, rating: 89, nationality: "indian-capped", selectionPercent: 61 },
-      { id: "p10", name: "Reyansh Kapoor", teamId: "team-mum", role: "BAT", credits: 8, rating: 80, nationality: "indian-uncapped", selectionPercent: 19 },
-      { id: "p11", name: "Kunal Desai", teamId: "team-mum", role: "AR", credits: 8.5, rating: 87, nationality: "indian-capped", selectionPercent: 44 },
-      { id: "p12", name: "Pranav Gill", teamId: "team-mum", role: "BOWL", credits: 9, rating: 91, nationality: "overseas", selectionPercent: 72 },
-      { id: "p13", name: "Tanish Ali", teamId: "team-mum", role: "BOWL", credits: 8, rating: 79, nationality: "indian-uncapped", selectionPercent: 15 },
-      { id: "p14", name: "Yuvraj Nanda", teamId: "team-mum", role: "BAT", credits: 7.5, rating: 77, nationality: "indian-uncapped", selectionPercent: 12 }
+      { id: "p1", name: "Arjun Rao", teamId: "team-mi", role: "WK", credits: 9, rating: 88, nationality: "indian-capped", selectionPercent: 45 },
+      { id: "p2", name: "Neel Sharma", teamId: "team-mi", role: "BAT", credits: 9.5, rating: 93, nationality: "indian-capped", selectionPercent: 78 },
+      { id: "p3", name: "Rohan Iyer", teamId: "team-mi", role: "BAT", credits: 8.5, rating: 84, nationality: "indian-capped", selectionPercent: 52 },
+      { id: "p4", name: "Kabir Sen", teamId: "team-mi", role: "AR", credits: 9, rating: 90, nationality: "indian-capped", selectionPercent: 67 },
+      { id: "p5", name: "Dev Malhotra", teamId: "team-mi", role: "BOWL", credits: 8.5, rating: 86, nationality: "indian-capped", selectionPercent: 41 },
+      { id: "p6", name: "Vivaan Patel", teamId: "team-mi", role: "BOWL", credits: 8, rating: 81, nationality: "indian-uncapped", selectionPercent: 23 },
+      { id: "p7", name: "Ishan Batra", teamId: "team-mi", role: "AR", credits: 8.5, rating: 82, nationality: "indian-capped", selectionPercent: 38 },
+      { id: "p8", name: "Aarav Mehta", teamId: "team-csk", role: "WK", credits: 8.5, rating: 85, nationality: "indian-capped", selectionPercent: 56 },
+      { id: "p9", name: "Samar Joshi", teamId: "team-csk", role: "BAT", credits: 9, rating: 89, nationality: "indian-capped", selectionPercent: 61 },
+      { id: "p10", name: "Reyansh Kapoor", teamId: "team-csk", role: "BAT", credits: 8, rating: 80, nationality: "indian-uncapped", selectionPercent: 19 },
+      { id: "p11", name: "Kunal Desai", teamId: "team-csk", role: "AR", credits: 8.5, rating: 87, nationality: "indian-capped", selectionPercent: 44 },
+      { id: "p12", name: "Pranav Gill", teamId: "team-csk", role: "BOWL", credits: 9, rating: 91, nationality: "overseas", selectionPercent: 72 },
+      { id: "p13", name: "Tanish Ali", teamId: "team-csk", role: "BOWL", credits: 8, rating: 79, nationality: "indian-uncapped", selectionPercent: 15 },
+      { id: "p14", name: "Yuvraj Nanda", teamId: "team-csk", role: "BAT", credits: 7.5, rating: 77, nationality: "indian-uncapped", selectionPercent: 12 }
     ],
     matches: [
       {
         id: "match-1",
-        homeTeamId: "team-ben",
-        awayTeamId: "team-mum",
+        homeTeamId: "team-mi",
+        awayTeamId: "team-csk",
         startsAt: hoursFromNow(28),
-        venue: "Harbor Oval",
+        venue: "Wankhede Stadium",
         state: "scheduled"
       }
     ],
     contests: [
       {
         id: "contest-1",
-        name: "Saturday Spotlight",
+        name: "Mumbai Indians vs Chennai Super Kings",
         kind: "public",
         matchId: "match-1",
         salaryCap: 100,
@@ -144,7 +146,7 @@ export function createSeedStore(): AppStore {
       },
       {
         id: "contest-2",
-        name: "Friends League Showdown",
+        name: "Friends League: MI vs CSK",
         kind: "private",
         matchId: "match-1",
         leagueId: "league-1",
@@ -227,8 +229,8 @@ export function createSeedStore(): AppStore {
         prompt: "Which side wins the match?",
         category: "winner",
         options: [
-          { id: "question-1-a", label: "Bengaluru Blaze", value: "team-ben" },
-          { id: "question-1-b", label: "Mumbai Tides", value: "team-mum" }
+          { id: "question-1-a", label: "Mumbai Indians", value: "team-mi" },
+          { id: "question-1-b", label: "Chennai Super Kings", value: "team-csk" }
         ],
         locksAt: hoursFromNow(27),
         resolvesAt: hoursFromNow(31),
@@ -266,7 +268,7 @@ export function createSeedStore(): AppStore {
         gameplayAffecting: false,
         transferable: false,
         redeemable: false,
-        resaleValue: false
+        resaleValue: 0
       },
       {
         id: "cos-theme-neon",
@@ -278,7 +280,7 @@ export function createSeedStore(): AppStore {
         gameplayAffecting: false,
         transferable: false,
         redeemable: false,
-        resaleValue: false
+        resaleValue: 0
       },
       {
         id: "cos-frame-copper",
@@ -290,7 +292,7 @@ export function createSeedStore(): AppStore {
         gameplayAffecting: false,
         transferable: false,
         redeemable: false,
-        resaleValue: false
+        resaleValue: 0
       }
     ],
     cosmeticUnlocks: [
@@ -344,7 +346,8 @@ export function createSeedStore(): AppStore {
     ],
     provider: {
       status: "ready",
-      syncedAt: hoursAgo(1)
+      syncedAt: hoursAgo(1),
+      lastAttemptedAt: hoursAgo(1)
     }
   };
 }

@@ -46,6 +46,7 @@ export interface Profile {
   username: string;
   bio?: string;
   favoriteTeamId?: ID;
+  credits: number;
   xp: number;
   level: number;
   streak: number;
@@ -271,6 +272,7 @@ export interface PredictionAnswer {
 }
 
 export interface PredictionResult {
+  id: ID;
   questionId: ID;
   userId: ID;
   correctOptionId: ID;
@@ -300,7 +302,7 @@ export interface CosmeticItem {
   gameplayAffecting: false;
   transferable: false;
   redeemable: false;
-  resaleValue: false;
+  resaleValue: number;
 }
 
 export interface CosmeticUnlock {
@@ -334,16 +336,19 @@ export interface DashboardPayload {
   matches: Match[];
   teams: Team[];
   players: Player[];
-  playerStats: PlayerStats[];
   rosters: Roster[];
   leaderboard: LeaderboardEntry[];
   questions: PredictionQuestion[];
   answers: PredictionAnswer[];
-  results: PredictionResult[];
   inventory: UserInventory;
   cosmetics: CosmeticItem[];
   badges: Badge[];
-  xpTransactions: XPTransaction[];
+}
+
+export interface PredictionFeedPayload {
+  questions: PredictionQuestion[];
+  answers: PredictionAnswer[];
+  results: PredictionResult[];
 }
 
 export interface RosterValidationResult {

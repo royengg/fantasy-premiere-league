@@ -3,6 +3,7 @@ import {
   createLeagueBanner,
   equipCosmetic,
   levelFromXp,
+  normalizeIplTeam,
   unlockCosmetic,
   validateRoster
 } from "@fantasy-cricket/domain";
@@ -21,11 +22,12 @@ import type {
   League,
   Match,
   Player,
-  PlayerStats,
   PredictionAnswer,
+  PredictionFeedPayload,
   PredictionQuestion,
   Profile,
   Roster,
+  Team,
   User,
   UserInventory
 } from "@fantasy-cricket/types";
@@ -47,6 +49,79 @@ import {
 } from "./provider-sync-service.js";
 import { cricketDataService } from "./cricket-data-service.js";
 
+interface PrismaGameRuntimeRepository {
+  createLeagueRecord: (userId: string, input: CreateLeagueInput) => Promise<League>;
+  joinLeagueByInvite: (userId: string, input: JoinLeagueInput) => Promise<League>;
+  submitRosterRecord: (
+    userId: string,
+    contestId: string,
+    input: SubmitRosterInput | BuildRosterInput
+  ) => Promise<Roster>;
+  answerPredictionRecord: (
+    userId: string,
+    questionId: string,
+    input: PredictionAnswerInput
+  ) => Promise<PredictionAnswer>;
+  settlePredictionRecord: (
+    questionId: string,
+    correctOptionId: string
+  ) => Promise<{ settledCount: number; correctOptionId: string }>;
+  equipCosmeticRecord: (userId: string, cosmeticId: string) => Promise<{ cosmeticId: string }>;
+  applyCorrectionRecord: (
+    matchId: string,
+    playerId: string,
+    label: string,
+    points: number
+  ) => Promise<{ status: string }>;
+  rebuildAllLeaderboards: () => Promise<void>;
+  applyProviderSnapshot: (snapshot: Awaited<ReturnType<typeof buildProviderSyncSnapshot>>) => Promise<void>;
+}
+
+interface PrismaGameReadRepository {
+  getDashboardPayload: (userId: string) => Promise<DashboardPayload>;
+  getVisibleContestsForUser: (userId: string) => Promise<Contest[]>;
+  getVisibleLeaguesForUser: (userId: string) => Promise<League[]>;
+  getPredictionFeedForUser: (userId: string) => Promise<PredictionFeedPayload>;
+  getInventoryForUser: (userId: string) => Promise<{ inventory: UserInventory; cosmetics: CosmeticItem[] }>;
+  getContestLeaderboardEntries: (contestId: string) => Promise<LeaderboardEntry[]>;
+  getContestSubscriberIds: (contestId: string) => Promise<string[]>;
+  getMatchSubscriberIds: (matchId: string) => Promise<string[]>;
+  getLeagueMemberIds: (leagueId: string) => Promise<string[]>;
+  getAllUserIds: () => Promise<string[]>;
+}
+
+function hasPrismaGameRuntimeRepository(
+  repository: AppRepository
+): repository is AppRepository & PrismaGameRuntimeRepository {
+  return typeof (repository as Partial<PrismaGameRuntimeRepository>).submitRosterRecord === "function";
+}
+
+function hasPrismaGameReadRepository(
+  repository: AppRepository
+): repository is AppRepository & PrismaGameReadRepository {
+  return typeof (repository as Partial<PrismaGameReadRepository>).getDashboardPayload === "function";
+}
+
+function preferredPublicContests(contests: Contest[]): Contest[] {
+  const providerManagedPublic = contests.filter(
+    (contest) => contest.kind === "public" && isProviderManagedId(contest.id)
+  );
+  if (providerManagedPublic.length > 0) {
+    return providerManagedPublic;
+  }
+
+  return contests.filter(
+    (contest) => contest.kind === "public" && !isProviderManagedId(contest.id)
+  );
+}
+
+function preferredQuestions(questions: PredictionQuestion[]): PredictionQuestion[] {
+  const providerQuestions = questions.filter((question) => isProviderManagedId(question.id));
+  return providerQuestions.length > 0
+    ? providerQuestions
+    : questions.filter((question) => !isProviderManagedId(question.id));
+}
+
 export class GameService {
   constructor(
     private readonly repository: AppRepository,
@@ -54,64 +129,59 @@ export class GameService {
   ) {}
 
   async initialize(): Promise<void> {
+    if (hasPrismaGameRuntimeRepository(this.repository)) {
+      await this.repository.rebuildAllLeaderboards();
+      return;
+    }
+
     const store = await this.repository.loadStore();
     this.recomputeAllLeaderboards(store);
     await this.repository.replaceStore(store);
   }
 
   async getDashboard(userId: string): Promise<DashboardPayload> {
-    return this.read((store) => {
-      const user = this.getUser(store, userId);
-      const inventory = this.getInventoryRecord(store, userId);
-      const contests = this.visibleContestsForUser(store, userId);
-      const contestIds = new Set(contests.map((contest) => contest.id));
-      const questions = this.visibleQuestions(store);
-      const questionIds = new Set(questions.map((question) => question.id));
-      const leagues = store.leagues.filter(
-        (league) => league.visibility === "public" || league.memberIds.includes(userId)
-      );
-      const matchIds = new Set([
-        ...contests.map((contest) => contest.matchId),
-        ...questions.map((question) => question.matchId)
-      ]);
-      const matches = store.matches.filter((match) => matchIds.has(match.id));
-      const teamIds = new Set(
-        matches.flatMap((match) => [match.homeTeamId, match.awayTeamId])
-      );
-      const teams = store.teams.filter((team) => teamIds.has(team.id));
-      const players = store.players.filter((player) => teamIds.has(player.teamId));
+    if (hasPrismaGameReadRepository(this.repository)) {
+      return this.repository.getDashboardPayload(userId);
+    }
 
-      return {
-        user,
-        profile: this.getProfile(store, userId),
-        contests,
-        leagues,
-        matches,
-        teams,
-        players,
-        playerStats: this.generatePlayerStats(players),
-        rosters: store.rosters.filter(
-          (roster) =>
-            contestIds.has(roster.contestId) &&
-            (roster.userId === userId || this.isPublicContest(store, roster.contestId))
-        ),
-        leaderboard: store.leaderboard.filter((entry) => contestIds.has(entry.contestId)),
-        questions,
-        answers: store.answers.filter(
-          (answer) => answer.userId === userId && questionIds.has(answer.questionId)
-        ),
-        results: store.results.filter(
-          (result) => result.userId === userId && questionIds.has(result.questionId)
-        ),
-        inventory,
-        cosmetics: store.cosmetics,
-        badges: store.badges,
-        xpTransactions: store.xpTransactions.filter((entry) => entry.userId === userId)
-      };
+    return this.read((store) => {
+      return this.buildDashboardPayload(store, userId);
     });
   }
 
+  async getContests(userId: string): Promise<Contest[]> {
+    if (hasPrismaGameReadRepository(this.repository)) {
+      return this.repository.getVisibleContestsForUser(userId);
+    }
+
+    return this.read((store) => this.visibleContestsForUser(store, userId));
+  }
+
+  async getLeagues(userId: string): Promise<League[]> {
+    if (hasPrismaGameReadRepository(this.repository)) {
+      return this.repository.getVisibleLeaguesForUser(userId);
+    }
+
+    return this.read((store) =>
+      store.leagues.filter(
+        (league) => league.visibility === "public" || league.memberIds.includes(userId)
+      )
+    );
+  }
+
+  async getPredictions(userId: string): Promise<PredictionFeedPayload> {
+    if (hasPrismaGameReadRepository(this.repository)) {
+      return this.repository.getPredictionFeedForUser(userId);
+    }
+
+    return this.read((store) => this.buildPredictionFeed(store, userId));
+  }
+
   async createLeague(userId: string, input: CreateLeagueInput): Promise<League> {
+    if (hasPrismaGameRuntimeRepository(this.repository)) {
+      return this.repository.createLeagueRecord(userId, input);
+    }
+
     return this.write((store) => {
       const league: League = {
         id: crypto.randomUUID(),
@@ -139,6 +209,10 @@ export class GameService {
   }
 
   async joinLeague(userId: string, input: JoinLeagueInput): Promise<League> {
+    if (hasPrismaGameRuntimeRepository(this.repository)) {
+      return this.repository.joinLeagueByInvite(userId, input);
+    }
+
     return this.write((store) => {
       const league = store.leagues.find((entry) => entry.inviteCode === input.inviteCode);
       if (!league) {
@@ -158,6 +232,10 @@ export class GameService {
     contestId: string,
     input: SubmitRosterInput | BuildRosterInput
   ): Promise<Roster> {
+    if (hasPrismaGameRuntimeRepository(this.repository)) {
+      return this.repository.submitRosterRecord(userId, contestId, input);
+    }
+
     return this.write((store) => {
       const contest = store.contests.find((entry) => entry.id === contestId);
       if (!contest) {
@@ -165,6 +243,7 @@ export class GameService {
       }
 
       const match = this.getMatch(store, contest.matchId);
+      const profile = this.getProfile(store, userId);
       const matchPlayers = this.playersForMatch(store, match);
       const validation = validateRoster(contest, match, matchPlayers, input, new Date());
 
@@ -175,6 +254,18 @@ export class GameService {
       const existing = store.rosters.find(
         (entry) => entry.contestId === contestId && entry.userId === userId
       );
+      const previousSpend = existing?.totalCredits ?? 0;
+      const nextSpend = validation.totalCredits;
+      const creditDelta = this.roundCredits(nextSpend - previousSpend);
+
+      if (creditDelta > profile.credits) {
+        throw new Error(
+          `Not enough credits. You need ${this.roundCredits(creditDelta - profile.credits).toFixed(1)} more credits to save this roster.`
+        );
+      }
+
+      profile.credits = this.roundCredits(profile.credits - creditDelta);
+
       const roster: Roster = {
         id: existing?.id ?? crypto.randomUUID(),
         contestId,
@@ -204,6 +295,10 @@ export class GameService {
     questionId: string,
     input: PredictionAnswerInput
   ): Promise<PredictionAnswer> {
+    if (hasPrismaGameRuntimeRepository(this.repository)) {
+      return this.repository.answerPredictionRecord(userId, questionId, input);
+    }
+
     return this.write((store) => {
       const question = this.getQuestion(store, questionId);
       if (!canSubmitPrediction(question)) {
@@ -240,6 +335,10 @@ export class GameService {
     questionId: string,
     correctOptionId: string
   ): Promise<{ settledCount: number; correctOptionId: string }> {
+    if (hasPrismaGameRuntimeRepository(this.repository)) {
+      return this.repository.settlePredictionRecord(questionId, correctOptionId);
+    }
+
     return this.write((store) => {
       const question = this.getQuestion(store, questionId);
       if (question.state === "settled") {
@@ -298,6 +397,10 @@ export class GameService {
   }
 
   async getInventory(userId: string): Promise<{ inventory: UserInventory; cosmetics: CosmeticItem[] }> {
+    if (hasPrismaGameReadRepository(this.repository)) {
+      return this.repository.getInventoryForUser(userId);
+    }
+
     return this.read((store) => {
       const inventory = this.getInventoryRecord(store, userId);
 
@@ -308,7 +411,21 @@ export class GameService {
     });
   }
 
+  async getContestLeaderboard(contestId: string): Promise<LeaderboardEntry[]> {
+    if (hasPrismaGameReadRepository(this.repository)) {
+      return this.repository.getContestLeaderboardEntries(contestId);
+    }
+
+    return this.read((store) =>
+      store.leaderboard.filter((entry) => entry.contestId === contestId)
+    );
+  }
+
   async equipUserCosmetic(userId: string, cosmeticId: string): Promise<{ cosmeticId: string }> {
+    if (hasPrismaGameRuntimeRepository(this.repository)) {
+      return this.repository.equipCosmeticRecord(userId, cosmeticId);
+    }
+
     return this.write((store) => {
       const inventory = this.getInventoryRecord(store, userId);
       const profile = this.getProfile(store, userId);
@@ -332,6 +449,10 @@ export class GameService {
     label: string,
     points: number
   ): Promise<{ status: string }> {
+    if (hasPrismaGameRuntimeRepository(this.repository)) {
+      return this.repository.applyCorrectionRecord(matchId, playerId, label, points);
+    }
+
     return this.write((store) => {
       const match = this.getMatch(store, matchId);
       store.scoreEvents.push({
@@ -352,6 +473,12 @@ export class GameService {
   }
 
   async syncProvider(): Promise<ProviderSyncResult> {
+    if (hasPrismaGameRuntimeRepository(this.repository)) {
+      const snapshot = await buildProviderSyncSnapshot(this.providerGateway);
+      await this.repository.applyProviderSnapshot(snapshot);
+      return providerSyncResult(snapshot);
+    }
+
     return this.writeAsync(async (store) => {
       const snapshot = await buildProviderSyncSnapshot(this.providerGateway);
 
@@ -385,7 +512,8 @@ export class GameService {
 
       store.provider = {
         status: "ready",
-        syncedAt: snapshot.syncedAt
+        syncedAt: snapshot.syncedAt,
+        lastAttemptedAt: new Date().toISOString()
       };
 
       return providerSyncResult(snapshot);
@@ -397,10 +525,18 @@ export class GameService {
   }
 
   async contestSubscriberIds(contestId: string): Promise<string[]> {
+    if (hasPrismaGameReadRepository(this.repository)) {
+      return this.repository.getContestSubscriberIds(contestId);
+    }
+
     return this.read((store) => this.contestSubscriberIdsFromStore(store, contestId));
   }
 
   async matchSubscriberIds(matchId: string): Promise<string[]> {
+    if (hasPrismaGameReadRepository(this.repository)) {
+      return this.repository.getMatchSubscriberIds(matchId);
+    }
+
     return this.read((store) => {
       const userIds = new Set<string>();
 
@@ -415,6 +551,10 @@ export class GameService {
   }
 
   async leagueMemberIds(leagueId: string): Promise<string[]> {
+    if (hasPrismaGameReadRepository(this.repository)) {
+      return this.repository.getLeagueMemberIds(leagueId);
+    }
+
     return this.read((store) => {
       const league = store.leagues.find((entry) => entry.id === leagueId);
       if (!league) {
@@ -426,6 +566,10 @@ export class GameService {
   }
 
   async allUserIds(): Promise<string[]> {
+    if (hasPrismaGameReadRepository(this.repository)) {
+      return this.repository.getAllUserIds();
+    }
+
     return this.read((store) => store.users.map((user) => user.id));
   }
 
@@ -466,6 +610,10 @@ export class GameService {
     return profile;
   }
 
+  private roundCredits(value: number) {
+    return Math.round(value * 10) / 10;
+  }
+
   private getInventoryRecord(store: AppStore, userId: string): UserInventory {
     const inventory = store.inventories.find((entry) => entry.userId === userId);
     if (!inventory) {
@@ -475,30 +623,91 @@ export class GameService {
     return inventory;
   }
 
-  private generatePlayerStats(players: Player[]): PlayerStats[] {
-    return players.map((player) => ({
-      playerId: player.id,
-      lastFiveMatches: [
-        Math.floor(Math.random() * 50) + 5,
-        Math.floor(Math.random() * 50) + 5,
-        Math.floor(Math.random() * 50) + 5,
-        Math.floor(Math.random() * 50) + 5,
-        Math.floor(Math.random() * 50) + 5
-      ],
-      totalPoints: Math.floor(Math.random() * 500) + 100,
-      averagePoints: Math.floor(Math.random() * 30) + 10,
-      highestScore: Math.floor(Math.random() * 100) + 30,
-      vsTeam: {},
-      venueRecord: {},
-      form:
-        player.rating > 88
-          ? "hot"
-          : player.rating > 82
-            ? "good"
-            : player.rating > 78
-              ? "average"
-              : "cold"
-    }));
+  private buildDashboardPayload(store: AppStore, userId: string): DashboardPayload {
+    const contests = this.visibleContestsForUser(store, userId);
+    const contestIds = new Set(contests.map((contest) => contest.id));
+    const leagues = store.leagues.filter(
+      (league) => league.visibility === "public" || league.memberIds.includes(userId)
+    );
+    const predictions = this.buildPredictionFeed(store, userId);
+    const matchIds = new Set([
+      ...contests.map((contest) => contest.matchId),
+      ...predictions.questions.map((question) => question.matchId)
+    ]);
+    const matches = store.matches.filter((match) => matchIds.has(match.id));
+    const teamIds = new Set(matches.flatMap((match) => [match.homeTeamId, match.awayTeamId]));
+    const teams = store.teams
+      .filter((team) => teamIds.has(team.id))
+      .map((team) => normalizeIplTeam(team));
+    const players = store.players.filter((player) => teamIds.has(player.teamId));
+
+    return {
+      user: this.getUser(store, userId),
+      profile: this.getProfile(store, userId),
+      contests,
+      leagues,
+      matches,
+      teams,
+      players,
+      rosters: store.rosters.filter(
+        (roster) =>
+          contestIds.has(roster.contestId) &&
+          (roster.userId === userId || this.isPublicContest(store, roster.contestId))
+      ),
+      leaderboard: store.leaderboard.filter((entry) => contestIds.has(entry.contestId)),
+      questions: predictions.questions,
+      answers: predictions.answers,
+      inventory: this.getInventoryRecord(store, userId),
+      cosmetics: store.cosmetics,
+      badges: store.badges
+    };
+  }
+
+  private buildPredictionFeed(store: AppStore, userId: string): PredictionFeedPayload {
+    const questions = this.normalizeQuestionsForDisplay(
+      preferredQuestions(store.questions),
+      store.matches,
+      store.teams
+    );
+    const questionIds = new Set(questions.map((question) => question.id));
+
+    return {
+      questions,
+      answers: store.answers.filter(
+        (answer) => answer.userId === userId && questionIds.has(answer.questionId)
+      ),
+      results: store.results.filter(
+        (result) => result.userId === userId && questionIds.has(result.questionId)
+      )
+    };
+  }
+
+  private normalizeQuestionsForDisplay(
+    questions: PredictionQuestion[],
+    matches: Match[],
+    teams: Team[]
+  ): PredictionQuestion[] {
+    const normalizedTeams = teams.map((team) => normalizeIplTeam(team));
+    const teamMap = new Map(normalizedTeams.map((team) => [team.id, team]));
+    const matchMap = new Map(matches.map((match) => [match.id, match]));
+
+    return questions.map((question) => {
+      const match = matchMap.get(question.matchId);
+      const homeTeam = match ? teamMap.get(match.homeTeamId) : undefined;
+      const awayTeam = match ? teamMap.get(match.awayTeamId) : undefined;
+
+      return {
+        ...question,
+        prompt:
+          question.category === "winner" && homeTeam && awayTeam
+            ? `Who wins ${homeTeam.name} vs ${awayTeam.name}?`
+            : question.prompt,
+        options: question.options.map((option) => {
+          const linkedTeam = teamMap.get(option.value);
+          return linkedTeam ? { ...option, label: linkedTeam.name } : option;
+        })
+      };
+    });
   }
 
   private unlockCosmeticForUserInStore(
@@ -575,16 +784,6 @@ export class GameService {
   }
 
   private visibleContestsForUser(store: AppStore, userId: string): Contest[] {
-    const preferredPublicContests = store.contests.some(
-      (contest) => contest.kind === "public" && isProviderManagedId(contest.id)
-    )
-      ? store.contests.filter(
-          (contest) => contest.kind === "public" && isProviderManagedId(contest.id)
-        )
-      : store.contests.filter(
-          (contest) => contest.kind === "public" && !isProviderManagedId(contest.id)
-        );
-
     const privateContestIds = new Set(
       store.leagues
         .filter((league) => league.visibility === "public" || league.memberIds.includes(userId))
@@ -595,17 +794,11 @@ export class GameService {
       (contest) => contest.kind === "private" && privateContestIds.has(contest.id)
     );
 
-    return [...preferredPublicContests, ...visiblePrivateContests];
+    return [...preferredPublicContests(store.contests), ...visiblePrivateContests];
   }
 
   private visibleQuestions(store: AppStore): PredictionQuestion[] {
-    const providerQuestions = store.questions.filter((question) =>
-      isProviderManagedId(question.id)
-    );
-
-    return providerQuestions.length > 0
-      ? providerQuestions
-      : store.questions.filter((question) => !isProviderManagedId(question.id));
+    return preferredQuestions(store.questions);
   }
 
   private pruneProviderData(store: AppStore) {

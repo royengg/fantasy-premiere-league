@@ -181,9 +181,10 @@ export interface CricketDataBowlerLive {
 }
 
 export interface CricketDataAPIResponse<T> {
-  data: T;
-  status: "success" | "error";
+  data?: T;
+  status: "success" | "error" | "failure";
   message?: string;
+  reason?: string;
   hits_remaining?: number;
   hits_limit?: number;
 }

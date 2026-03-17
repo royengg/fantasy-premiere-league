@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { ChevronDown, ChevronUp, Clock, Users, Star, TrendingUp } from "lucide-react";
 import type { BuildRosterInput, Contest, LeaderboardEntry, Match, Player, Roster, Team } from "@fantasy-cricket/types";
 import { CricketField } from "./CricketField";
+import { getTeamPalette } from "../lib/team-branding";
 
 interface ContestViewProps {
   contests: Contest[];
@@ -10,11 +11,12 @@ interface ContestViewProps {
   players: Player[];
   rosters: Roster[];
   leaderboard: LeaderboardEntry[];
+  profileCredits: number;
   userId: string;
   onSubmit: (contestId: string, payload: BuildRosterInput) => Promise<unknown>;
 }
 
-export function ContestView({ contests, matches, teams, players, rosters, leaderboard, userId, onSubmit }: ContestViewProps) {
+export function ContestView({ contests, matches, teams, players, rosters, leaderboard, profileCredits, userId, onSubmit }: ContestViewProps) {
   if (contests.length === 0) {
     return (
       <div className="text-center py-20">
@@ -46,6 +48,7 @@ export function ContestView({ contests, matches, teams, players, rosters, leader
             players={matchPlayers}
             roster={roster}
             leaderboard={contestLeaderboard}
+            profileCredits={profileCredits}
             onSubmit={onSubmit}
           />
         );
@@ -62,10 +65,11 @@ interface ContestCardProps {
   players: Player[];
   roster?: Roster;
   leaderboard: LeaderboardEntry[];
+  profileCredits: number;
   onSubmit: (contestId: string, payload: BuildRosterInput) => Promise<unknown>;
 }
 
-function ContestCard({ contest, match, homeTeam, awayTeam, players, roster, leaderboard, onSubmit }: ContestCardProps) {
+function ContestCard({ contest, match, homeTeam, awayTeam, players, roster, leaderboard, profileCredits, onSubmit }: ContestCardProps) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<"field" | "players" | "leaderboard">("field");
   const [selected, setSelected] = useState<string[]>([]);
@@ -85,6 +89,8 @@ function ContestCard({ contest, match, homeTeam, awayTeam, players, roster, lead
   const remaining = contest.salaryCap - creditsUsed;
   const isFull = selected.length === contest.rosterRules.totalPlayers;
   const locked = new Date(contest.lockTime) < new Date();
+  const creditDelta = Number((creditsUsed - (roster?.totalCredits ?? 0)).toFixed(1));
+  const lacksCredits = creditDelta > profileCredits;
 
   const roleCount = useMemo(() => {
     const counts = { WK: 0, BAT: 0, AR: 0, BOWL: 0 };
@@ -114,6 +120,8 @@ function ContestCard({ contest, match, homeTeam, awayTeam, players, roster, lead
   };
 
   const creditsPercent = (creditsUsed / contest.salaryCap) * 100;
+  const homePalette = homeTeam ? getTeamPalette(homeTeam) : null;
+  const awayPalette = awayTeam ? getTeamPalette(awayTeam) : null;
 
   return (
     <div 
@@ -125,14 +133,10 @@ function ContestCard({ contest, match, homeTeam, awayTeam, players, roster, lead
         className="w-full p-5 flex items-center justify-between hover:bg-white/[0.02] transition-colors"
       >
         <div className="flex items-center gap-6">
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-xl bg-accent/10 border border-accent/20 flex items-center justify-center text-lg font-bold text-accent">
-              {homeTeam?.shortName?.slice(0, 3).toUpperCase() ?? "H"}
-            </div>
+          <div className="flex items-center gap-4 min-w-0">
+            <TeamBadge team={homePalette?.team} primary={homePalette?.primary} />
             <div className="px-3 py-1 text-xs font-bold text-text-muted">VS</div>
-            <div className="w-12 h-12 rounded-xl bg-accent/10 border border-accent/20 flex items-center justify-center text-lg font-bold text-accent">
-              {awayTeam?.shortName?.slice(0, 3).toUpperCase() ?? "A"}
-            </div>
+            <TeamBadge team={awayPalette?.team} primary={awayPalette?.primary} />
           </div>
           <div className="hidden md:flex items-center gap-2 text-sm text-text-muted">
             <Clock className="w-4 h-4" />
@@ -168,6 +172,12 @@ function ContestCard({ contest, match, homeTeam, awayTeam, players, roster, lead
                   <span className="text-text-muted">Players:</span>
                   <span className={`font-bold ${isFull ? "text-accent" : ""}`}>{selected.length}/11</span>
                 </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-text-muted">Wallet:</span>
+                  <span className={`font-bold ${lacksCredits ? "text-red-400" : "text-accent"}`}>
+                    {profileCredits.toFixed(1)} cr
+                  </span>
+                </div>
                 <div className="w-32">
                   <div className="flex justify-between text-xs mb-1">
                     <span className="text-text-muted">Credits</span>
@@ -189,6 +199,13 @@ function ContestCard({ contest, match, homeTeam, awayTeam, players, roster, lead
               <span className="px-2 py-0.5 rounded bg-green-500/20 text-green-400">{roleCount.BAT} BAT</span>
               <span className="px-2 py-0.5 rounded bg-orange-500/20 text-orange-400">{roleCount.AR} AR</span>
               <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-400">{roleCount.BOWL} BOWL</span>
+              <span className={lacksCredits ? "text-red-400" : "text-text-muted"}>
+                {creditDelta > 0
+                  ? `Save cost: ${creditDelta.toFixed(1)} cr`
+                  : creditDelta < 0
+                    ? `Refund: ${Math.abs(creditDelta).toFixed(1)} cr`
+                    : "No credit change"}
+              </span>
             </div>
           </div>
 
@@ -278,7 +295,7 @@ function ContestCard({ contest, match, homeTeam, awayTeam, players, roster, lead
                   
                   <button 
                     onClick={submit} 
-                    disabled={locked || !isFull || remaining < 0} 
+                    disabled={locked || !isFull || remaining < 0 || lacksCredits} 
                     className="btn-primary w-full mt-4"
                   >
                     {roster ? "Update Team" : "Submit Team"}
@@ -362,6 +379,38 @@ function ContestCard({ contest, match, homeTeam, awayTeam, players, roster, lead
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+interface TeamBadgeProps {
+  team?: Team;
+  primary?: string;
+}
+
+function TeamBadge({ team, primary }: TeamBadgeProps) {
+  const shortName = team?.shortName?.toUpperCase() ?? "TBD";
+
+  return (
+    <div className="flex items-center gap-3 min-w-0">
+      <div
+        className="w-12 h-12 rounded-xl border flex items-center justify-center text-sm font-black shrink-0"
+        style={{
+          background: primary ? `${primary}18` : "rgba(34, 197, 94, 0.12)",
+          borderColor: primary ? `${primary}44` : "rgba(34, 197, 94, 0.24)",
+          color: primary ?? "#22c55e"
+        }}
+      >
+        {shortName}
+      </div>
+      <div className="min-w-0">
+        <p className="text-sm font-semibold text-text leading-tight truncate">
+          {team?.name ?? "Team TBD"}
+        </p>
+        <p className="text-[11px] uppercase tracking-[0.18em] text-text-muted">
+          {team?.city ?? "IPL"}
+        </p>
+      </div>
     </div>
   );
 }

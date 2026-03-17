@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import type { Team } from "@fantasy-cricket/types";
+import { getDisplayTeam, getTeamPalette } from "../lib/team-branding";
 
 interface OnboardingScreenProps {
   name: string;
@@ -23,6 +24,9 @@ export function OnboardingScreen({
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const displayTeams = teams.map((team) => getDisplayTeam(team));
+  const selectedTeam = displayTeams.find((team) => team.id === favoriteTeamId);
+  const selectedPalette = selectedTeam ? getTeamPalette(selectedTeam) : null;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -83,12 +87,41 @@ export function OnboardingScreen({
               className="w-full mt-1.5 h-12 px-4 bg-surface border border-border rounded-xl text-text focus:outline-none focus:border-accent transition-colors"
               required
             >
-              {teams.map((team) => (
+              {displayTeams.map((team) => (
                 <option key={team.id} value={team.id}>
-                  {team.name}
+                  {team.name} ({team.shortName})
                 </option>
               ))}
             </select>
+            {selectedTeam && selectedPalette ? (
+              <div
+                className="mt-3 rounded-2xl border p-4"
+                style={{
+                  borderColor: `${selectedPalette.primary}44`,
+                  background: `linear-gradient(135deg, ${selectedPalette.primary}16, ${selectedPalette.secondary}10)`
+                }}
+              >
+                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-text-muted mb-2">
+                  Current Favorite
+                </p>
+                <div className="flex items-center gap-3">
+                  <div
+                    className="w-12 h-12 rounded-xl border flex items-center justify-center text-sm font-black"
+                    style={{
+                      background: `${selectedPalette.primary}18`,
+                      borderColor: `${selectedPalette.primary}44`,
+                      color: selectedPalette.primary
+                    }}
+                  >
+                    {selectedTeam.shortName}
+                  </div>
+                  <div>
+                    <p className="font-semibold text-text">{selectedTeam.name}</p>
+                    <p className="text-sm text-text-muted">{selectedTeam.city}</p>
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </div>
 
           {error ? (

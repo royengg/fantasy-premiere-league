@@ -58,6 +58,7 @@ export function settlePredictionAnswer(
 
   return {
     result: {
+      id: `${question.id}-${answer.userId}`,
       questionId: question.id,
       userId: answer.userId,
       correctOptionId,
@@ -77,4 +78,3 @@ export function settlePredictionAnswer(
     }
   };
 }
-

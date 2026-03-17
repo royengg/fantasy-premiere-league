@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@fantasy-cricket/api-client": "workspace:*",
+    "@fantasy-cricket/domain": "workspace:*",
     "@fantasy-cricket/types": "workspace:*",
     "@radix-ui/react-avatar": "^1.1.11",
     "@radix-ui/react-dialog": "^1.1.15",

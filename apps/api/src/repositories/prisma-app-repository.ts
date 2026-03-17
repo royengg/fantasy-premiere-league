@@ -1,9 +1,21 @@
+import {
+  createInviteCode,
+  createLeagueBanner,
+  equipCosmetic,
+  levelFromXp,
+  normalizeIplTeam,
+  unlockCosmetic,
+  validateRoster
+} from "@fantasy-cricket/domain";
+import { calculateRosterPoints, canSubmitPrediction, settlePredictionAnswer } from "@fantasy-cricket/scoring";
 import type {
+  BuildRosterInput,
   AuthSession,
   Badge,
   Contest,
   CosmeticItem,
   CosmeticUnlock,
+  DashboardPayload,
   FantasyScoreEvent,
   Friendship,
   Invite,
@@ -12,6 +24,7 @@ import type {
   Match,
   Player,
   PredictionAnswer,
+  PredictionFeedPayload,
   PredictionQuestion,
   PredictionResult,
   Profile,
@@ -21,12 +34,23 @@ import type {
   UserInventory,
   XPTransaction
 } from "@fantasy-cricket/types";
+import type {
+  CreateLeagueInput,
+  JoinLeagueInput,
+  PredictionAnswerInput,
+  SubmitRosterInput
+} from "@fantasy-cricket/validators";
 
 import type { AppStore, AuthCredential } from "../data/store.js";
-import { hashPasswordSync } from "../lib/password.js";
 import { prisma } from "../lib/prisma.js";
 import { Prisma, type PrismaClient } from "../generated/prisma/client";
+import type {
+  ProviderStateCreateInput,
+  ProviderStateModel,
+  ProviderStateUpdateInput
+} from "../generated/prisma/models/ProviderState";
 import type { AppRepository } from "./app-repository.js";
+import type { ProviderSyncSnapshot } from "../services/provider-sync-service.js";
 
 const SNAPSHOT_TRANSACTION_OPTIONS = {
   maxWait: 10_000,
@@ -81,12 +105,13 @@ function mapUsers(rows: Array<{ id: string; email: string; name: string; created
   }));
 }
 
-function mapProfiles(rows: Array<{ userId: string; username: string; bio: string | null; favoriteTeamId: string | null; xp: number; level: number; streak: number; onboardingCompleted: boolean; equippedCosmetics: Prisma.JsonValue }>): Profile[] {
+function mapProfiles(rows: Array<{ userId: string; username: string; bio: string | null; favoriteTeamId: string | null; credits: number; xp: number; level: number; streak: number; onboardingCompleted: boolean; equippedCosmetics: Prisma.JsonValue }>): Profile[] {
   return rows.map((row) => ({
     userId: row.userId,
     username: row.username,
     bio: row.bio ?? undefined,
     favoriteTeamId: row.favoriteTeamId ?? undefined,
+    credits: row.credits,
     xp: row.xp,
     level: row.level,
     streak: row.streak,
@@ -164,34 +189,22 @@ function mapContests(rows: Array<{ id: string; name: string; kind: string; match
   }));
 }
 
-function mapLeagues(rows: Array<{ id: string; name: string; description: string | null; visibility: string; createdBy: string; inviteCode: string; memberIds: string[]; contestIds: string[]; bannerStyle: string }>): League[] {
-  return rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    description: row.description ?? undefined,
-    visibility: row.visibility as League["visibility"],
-    createdBy: row.createdBy,
-    inviteCode: row.inviteCode,
-    memberIds: row.memberIds,
-    contestIds: row.contestIds,
-    bannerStyle: row.bannerStyle
-  }));
+function mapLeagues(rows: Array<{
+  id: string;
+  name: string;
+  description: string | null;
+  visibility: string;
+  createdBy: string;
+  inviteCode: string;
+  bannerStyle: string;
+  members: Array<{ userId: string }>;
+  contests: Array<{ id: string }>;
+}>): League[] {
+  return rows.map((row) => toLeagueDto(row));
 }
 
 function mapRosters(rows: Array<{ id: string; contestId: string; userId: string; players: Prisma.JsonValue; captainPlayerId: string; viceCaptainPlayerId: string; impactPlayerId: string | null; totalCredits: number; submittedAt: Date; locked: boolean; hasUncappedPlayer: boolean }>): Roster[] {
-  return rows.map((row) => ({
-    id: row.id,
-    contestId: row.contestId,
-    userId: row.userId,
-    players: asJson<Roster["players"]>(row.players),
-    captainPlayerId: row.captainPlayerId,
-    viceCaptainPlayerId: row.viceCaptainPlayerId,
-    impactPlayerId: row.impactPlayerId ?? undefined,
-    totalCredits: row.totalCredits,
-    submittedAt: row.submittedAt.toISOString(),
-    locked: row.locked,
-    hasUncappedPlayer: row.hasUncappedPlayer
-  }));
+  return rows.map((row) => toRosterDto(row));
 }
 
 function mapScoreEvents(rows: Array<{ id: string; matchId: string; playerId: string; label: string; points: number; createdAt: Date }>): FantasyScoreEvent[] {
@@ -246,6 +259,7 @@ function mapAnswers(rows: Array<{ id: string; questionId: string; userId: string
 
 function mapResults(rows: Array<{ id: string; questionId: string; userId: string; correctOptionId: string; awardedXp: number; awardedBadgeId: string | null; awardedCosmeticId: string | null; streak: number; settledAt: Date }>): PredictionResult[] {
   return rows.map((row) => ({
+    id: row.id,
     questionId: row.questionId,
     userId: row.userId,
     correctOptionId: row.correctOptionId,
@@ -257,7 +271,7 @@ function mapResults(rows: Array<{ id: string; questionId: string; userId: string
   }));
 }
 
-function mapCosmetics(rows: Array<{ id: string; name: string; description: string; category: string; rarity: string; themeToken: string; gameplayAffecting: boolean; transferable: boolean; redeemable: boolean; resaleValue: boolean }>): CosmeticItem[] {
+function mapCosmetics(rows: Array<{ id: string; name: string; description: string; category: string; rarity: string; themeToken: string; gameplayAffecting: boolean; transferable: boolean; redeemable: boolean; resaleValue: number }>): CosmeticItem[] {
   return rows.map((row) => ({
     id: row.id,
     name: row.name,
@@ -268,7 +282,7 @@ function mapCosmetics(rows: Array<{ id: string; name: string; description: strin
     gameplayAffecting: row.gameplayAffecting as false,
     transferable: row.transferable as false,
     redeemable: row.redeemable as false,
-    resaleValue: row.resaleValue as false
+    resaleValue: row.resaleValue
   }));
 }
 
@@ -312,45 +326,1945 @@ function mapXpTransactions(rows: Array<{ id: string; userId: string; source: str
   }));
 }
 
+function friendshipPairKey(requesterId: string, addresseeId: string) {
+  return [requesterId, addresseeId].sort().join(":");
+}
+
+function preferredPublicContests(contests: Contest[]) {
+  const providerManagedPublic = contests.filter(
+    (contest) => contest.kind === "public" && contest.id.startsWith("provider:")
+  );
+  if (providerManagedPublic.length > 0) {
+    return providerManagedPublic;
+  }
+
+  return contests.filter(
+    (contest) => contest.kind === "public" && !contest.id.startsWith("provider:")
+  );
+}
+
+function preferredQuestions(questions: PredictionQuestion[]) {
+  const providerQuestions = questions.filter((question) => question.id.startsWith("provider:"));
+  return providerQuestions.length > 0
+    ? providerQuestions
+    : questions.filter((question) => !question.id.startsWith("provider:"));
+}
+
+function normalizeQuestionsForDisplay(
+  questions: PredictionQuestion[],
+  matches: Match[],
+  teams: Team[]
+): PredictionQuestion[] {
+  const normalizedTeams = teams.map((team) => normalizeIplTeam(team));
+  const teamMap = new Map(normalizedTeams.map((team) => [team.id, team]));
+  const matchMap = new Map(matches.map((match) => [match.id, match]));
+
+  return questions.map((question) => {
+    const match = matchMap.get(question.matchId);
+    const homeTeam = match ? teamMap.get(match.homeTeamId) : undefined;
+    const awayTeam = match ? teamMap.get(match.awayTeamId) : undefined;
+
+    return {
+      ...question,
+      prompt:
+        question.category === "winner" && homeTeam && awayTeam
+          ? `Who wins ${homeTeam.name} vs ${awayTeam.name}?`
+          : question.prompt,
+      options: question.options.map((option) => {
+        const linkedTeam = teamMap.get(option.value);
+        return linkedTeam ? { ...option, label: linkedTeam.name } : option;
+      })
+    };
+  });
+}
+
+function toLeagueDto(row: {
+  id: string;
+  name: string;
+  description: string | null;
+  visibility: string;
+  createdBy: string;
+  inviteCode: string;
+  bannerStyle: string;
+  members: Array<{ userId: string }>;
+  contests?: Array<{ id: string }>;
+}): League {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? undefined,
+    visibility: row.visibility as League["visibility"],
+    createdBy: row.createdBy,
+    inviteCode: row.inviteCode,
+    memberIds: row.members.map((member) => member.userId),
+    contestIds: (row.contests ?? []).map((contest) => contest.id),
+    bannerStyle: row.bannerStyle
+  };
+}
+
+function toRosterDto(row: {
+  id: string;
+  contestId: string;
+  userId: string;
+  players: Prisma.JsonValue;
+  captainPlayerId: string;
+  viceCaptainPlayerId: string;
+  impactPlayerId: string | null;
+  totalCredits: number;
+  submittedAt: Date;
+  locked: boolean;
+  hasUncappedPlayer: boolean;
+}): Roster {
+  return {
+    id: row.id,
+    contestId: row.contestId,
+    userId: row.userId,
+    players: asJson<Roster["players"]>(row.players),
+    captainPlayerId: row.captainPlayerId,
+    viceCaptainPlayerId: row.viceCaptainPlayerId,
+    impactPlayerId: row.impactPlayerId ?? undefined,
+    totalCredits: row.totalCredits,
+    submittedAt: row.submittedAt.toISOString(),
+    locked: row.locked,
+    hasUncappedPlayer: row.hasUncappedPlayer
+  };
+}
+
+function buildLeaderboardEntries(
+  contest: Contest,
+  rosters: Roster[],
+  players: Player[],
+  events: FantasyScoreEvent[],
+  previousEntries: LeaderboardEntry[]
+): LeaderboardEntry[] {
+  const previousRanks = new Map(previousEntries.map((entry) => [entry.userId, entry.rank]));
+
+  return rosters
+    .map((roster) => ({
+      roster,
+      score: calculateRosterPoints(roster, players, events).total
+    }))
+    .sort((left, right) => right.score - left.score)
+    .map(({ roster, score }, index) => {
+      const currentRank = index + 1;
+      const previousRank = previousRanks.get(roster.userId) ?? currentRank;
+
+      return {
+        id: `${contest.id}-${roster.userId}`,
+        contestId: contest.id,
+        userId: roster.userId,
+        points: score,
+        rank: currentRank,
+        previousRank,
+        trend:
+          currentRank < previousRank ? "up" : currentRank > previousRank ? "down" : "steady"
+      };
+    });
+}
+
+type ProviderStateRow = Pick<
+  ProviderStateModel,
+  "id" | "status" | "syncedAt" | "lastAttemptedAt"
+>;
+
+interface InformationSchemaColumn {
+  table_name: string;
+  column_name: string;
+  data_type: string;
+}
+
 export class PrismaAppRepository implements AppRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
+  private async ensureRuntimeCompatibility(): Promise<void> {
+    const columns = await this.client.$queryRawUnsafe<InformationSchemaColumn[]>(`
+      SELECT
+        table_name::TEXT AS table_name,
+        column_name::TEXT AS column_name,
+        data_type::TEXT AS data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name IN ('Profile', 'Friendship', 'CosmeticItem', 'League', 'Contest', 'LeagueMember')
+    `);
+
+    const hasColumn = (tableName: string, columnName: string) =>
+      columns.some(
+        (column) => column.table_name === tableName && column.column_name === columnName
+      );
+    const columnType = (tableName: string, columnName: string) =>
+      columns.find(
+        (column) => column.table_name === tableName && column.column_name === columnName
+      )?.data_type;
+
+    await this.client.$executeRawUnsafe(`
+      ALTER TABLE "Profile"
+      ADD COLUMN IF NOT EXISTS "credits" DOUBLE PRECISION NOT NULL DEFAULT 100
+    `);
+    await this.client.$executeRawUnsafe(`
+      ALTER TABLE "Profile"
+      ADD COLUMN IF NOT EXISTS "onboardingCompleted" BOOLEAN NOT NULL DEFAULT false
+    `);
+
+    await this.client.$executeRawUnsafe(`
+      ALTER TABLE "Friendship"
+      ADD COLUMN IF NOT EXISTS "pairKey" TEXT
+    `);
+    await this.client.$executeRawUnsafe(`
+      UPDATE "Friendship"
+      SET "pairKey" = CASE
+        WHEN "requesterId" <= "addresseeId" THEN "requesterId" || ':' || "addresseeId"
+        ELSE "addresseeId" || ':' || "requesterId"
+      END
+      WHERE "pairKey" IS NULL OR "pairKey" = ''
+    `);
+
+    if (!hasColumn("CosmeticItem", "resaleValue")) {
+      await this.client.$executeRawUnsafe(`
+        ALTER TABLE "CosmeticItem"
+        ADD COLUMN IF NOT EXISTS "resaleValue" DOUBLE PRECISION NOT NULL DEFAULT 0
+      `);
+    } else if (columnType("CosmeticItem", "resaleValue") === "boolean") {
+      await this.client.$executeRawUnsafe(`
+        ALTER TABLE "CosmeticItem"
+        ALTER COLUMN "resaleValue" DROP DEFAULT
+      `);
+      await this.client.$executeRawUnsafe(`
+        ALTER TABLE "CosmeticItem"
+        ALTER COLUMN "resaleValue"
+        TYPE DOUBLE PRECISION
+        USING CASE WHEN "resaleValue" THEN 1::double precision ELSE 0::double precision END
+      `);
+      await this.client.$executeRawUnsafe(`
+        ALTER TABLE "CosmeticItem"
+        ALTER COLUMN "resaleValue" SET DEFAULT 0
+      `);
+    }
+
+    await this.client.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "LeagueMember" (
+        "leagueId" TEXT NOT NULL,
+        "userId" TEXT NOT NULL,
+        "joinedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "LeagueMember_pkey" PRIMARY KEY ("leagueId", "userId")
+      )
+    `);
+    await this.client.$executeRawUnsafe(`
+      CREATE INDEX IF NOT EXISTS "LeagueMember_userId_idx"
+      ON "LeagueMember"("userId")
+    `);
+
+    if (hasColumn("League", "memberIds")) {
+      await this.client.$executeRawUnsafe(`
+        INSERT INTO "LeagueMember" ("leagueId", "userId", "joinedAt")
+        SELECT l.id, member_id, CURRENT_TIMESTAMP
+        FROM "League" l,
+          UNNEST(COALESCE(l."memberIds", ARRAY[]::TEXT[])) AS member_id
+        ON CONFLICT ("leagueId", "userId") DO NOTHING
+      `);
+    }
+
+    if (hasColumn("League", "contestIds")) {
+      await this.client.$executeRawUnsafe(`
+        UPDATE "Contest" c
+        SET "leagueId" = src.league_id
+        FROM (
+          SELECT l.id AS league_id, UNNEST(COALESCE(l."contestIds", ARRAY[]::TEXT[])) AS contest_id
+          FROM "League" l
+        ) src
+        WHERE c.id = src.contest_id
+          AND c."leagueId" IS NULL
+      `);
+    }
+  }
+
+  async listProfileUsernamesByBase(baseUsername: string): Promise<string[]> {
+    const rows = await this.client.profile.findMany({
+      where: {
+        username: {
+          startsWith: baseUsername,
+          mode: "insensitive"
+        }
+      },
+      select: {
+        username: true
+      }
+    });
+
+    return rows.map((row) => row.username);
+  }
+
+  async findUserLoginRecord(email: string): Promise<{
+    user: User;
+    profile: Profile;
+    passwordHash: string;
+  } | null> {
+    const row = await this.client.user.findUnique({
+      where: { email },
+      include: {
+        credential: true,
+        profile: true
+      }
+    });
+
+    if (!row?.credential || !row.profile) {
+      return null;
+    }
+
+    return {
+      user: {
+        id: row.id,
+        email: row.email,
+        name: row.name,
+        createdAt: row.createdAt.toISOString()
+      },
+      profile: {
+        userId: row.profile.userId,
+        username: row.profile.username,
+        bio: row.profile.bio ?? undefined,
+        favoriteTeamId: row.profile.favoriteTeamId ?? undefined,
+        credits: row.profile.credits,
+        xp: row.profile.xp,
+        level: row.profile.level,
+        streak: row.profile.streak,
+        onboardingCompleted: row.profile.onboardingCompleted,
+        equippedCosmetics: asJson<Profile["equippedCosmetics"]>(row.profile.equippedCosmetics)
+      },
+      passwordHash: row.credential.passwordHash
+    };
+  }
+
+  async createRegisteredUserRecord(payload: {
+    user: User;
+    profile: Profile;
+    passwordHash: string;
+    sessionHash: string;
+    sessionCreatedAt: string;
+    sessionExpiresAt: string;
+  }): Promise<void> {
+    await this.client.$transaction(async (tx) => {
+      await tx.user.create({
+        data: {
+          id: payload.user.id,
+          email: payload.user.email,
+          name: payload.user.name,
+          createdAt: new Date(payload.user.createdAt)
+        }
+      });
+
+      await tx.authCredential.create({
+        data: {
+          userId: payload.user.id,
+          passwordHash: payload.passwordHash
+        }
+      });
+
+      await tx.profile.create({
+        data: {
+          userId: payload.profile.userId,
+          username: payload.profile.username,
+          bio: payload.profile.bio ?? null,
+          favoriteTeamId: payload.profile.favoriteTeamId ?? null,
+          credits: payload.profile.credits,
+          xp: payload.profile.xp,
+          level: payload.profile.level,
+          streak: payload.profile.streak,
+          onboardingCompleted: payload.profile.onboardingCompleted,
+          equippedCosmetics: inputJson(payload.profile.equippedCosmetics)
+        }
+      });
+
+      await tx.userInventory.create({
+        data: {
+          userId: payload.user.id,
+          cosmeticIds: [],
+          badgeIds: [],
+          equipped: inputJson({})
+        }
+      });
+
+      await tx.session.create({
+        data: {
+          token: payload.sessionHash,
+          userId: payload.user.id,
+          createdAt: new Date(payload.sessionCreatedAt),
+          expiresAt: new Date(payload.sessionExpiresAt)
+        }
+      });
+    });
+  }
+
+  async createHashedSession(payload: {
+    userId: string;
+    sessionHash: string;
+    createdAt: string;
+    expiresAt: string;
+  }): Promise<void> {
+    await this.client.session.create({
+      data: {
+        token: payload.sessionHash,
+        userId: payload.userId,
+        createdAt: new Date(payload.createdAt),
+        expiresAt: new Date(payload.expiresAt)
+      }
+    });
+  }
+
+  async completeOnboardingProfile(payload: {
+    userId: string;
+    username: string;
+    favoriteTeamId: string;
+  }): Promise<Profile> {
+    const [team, duplicate] = await Promise.all([
+      this.client.team.findUnique({
+        where: { id: payload.favoriteTeamId },
+        select: { id: true }
+      }),
+      this.client.profile.findFirst({
+        where: {
+          username: {
+            equals: payload.username,
+            mode: "insensitive"
+          },
+          NOT: {
+            userId: payload.userId
+          }
+        },
+        select: {
+          userId: true
+        }
+      })
+    ]);
+
+    if (!team) {
+      throw new Error("Favorite team not found.");
+    }
+
+    if (duplicate) {
+      throw new Error("Username is already taken.");
+    }
+
+    const profile = await this.client.profile.update({
+      where: { userId: payload.userId },
+      data: {
+        username: payload.username,
+        favoriteTeamId: payload.favoriteTeamId,
+        onboardingCompleted: true
+      }
+    });
+
+    return {
+      userId: profile.userId,
+      username: profile.username,
+      bio: profile.bio ?? undefined,
+      favoriteTeamId: profile.favoriteTeamId ?? undefined,
+      credits: profile.credits,
+      xp: profile.xp,
+      level: profile.level,
+      streak: profile.streak,
+      onboardingCompleted: profile.onboardingCompleted,
+      equippedCosmetics: asJson<Profile["equippedCosmetics"]>(profile.equippedCosmetics)
+    };
+  }
+
+  async findActiveSessionUserId(sessionHash: string, now: string): Promise<string | null> {
+    const session = await this.client.session.findUnique({
+      where: { token: sessionHash },
+      select: {
+        userId: true,
+        expiresAt: true
+      }
+    });
+
+    if (!session) {
+      return null;
+    }
+
+    if (session.expiresAt.getTime() <= new Date(now).getTime()) {
+      await this.client.session.delete({
+        where: { token: sessionHash }
+      }).catch(() => undefined);
+      return null;
+    }
+
+    return session.userId;
+  }
+
+  async deleteSessionByHash(sessionHash: string): Promise<void> {
+    await this.client.session.deleteMany({
+      where: { token: sessionHash }
+    });
+  }
+
+  async getDashboardPayload(userId: string): Promise<DashboardPayload> {
+    const [userRow, inventoryRow, cosmeticsRows, badgesRows, contests, leagues, predictions] =
+      await Promise.all([
+        this.client.user.findUnique({
+          where: { id: userId },
+          include: {
+            profile: true
+          }
+        }),
+        this.client.userInventory.findUnique({
+          where: { userId }
+        }),
+        this.client.cosmeticItem.findMany(),
+        this.client.badge.findMany(),
+        this.getVisibleContestsForUser(userId),
+        this.getVisibleLeaguesForUser(userId),
+        this.getPredictionFeedForUser(userId)
+      ]);
+
+    if (!userRow) {
+      throw new Error("Unknown user.");
+    }
+
+    if (!userRow.profile) {
+      throw new Error("Unknown profile.");
+    }
+
+    if (!inventoryRow) {
+      throw new Error("Inventory not found.");
+    }
+
+    const matchIds = [
+      ...new Set([
+        ...contests.map((contest) => contest.matchId),
+        ...predictions.questions.map((question) => question.matchId)
+      ])
+    ];
+    const matchRows = matchIds.length
+      ? await this.client.match.findMany({
+          where: {
+            id: {
+              in: matchIds
+            }
+          }
+        })
+      : [];
+    const matches = mapMatches(matchRows);
+    const teamIds = [
+      ...new Set(matches.flatMap((match) => [match.homeTeamId, match.awayTeamId]))
+    ];
+    const teamRows = teamIds.length
+      ? await this.client.team.findMany({
+          where: {
+            id: {
+              in: teamIds
+            }
+          }
+        })
+      : [];
+    const teams = mapTeams(teamRows).map((team) => normalizeIplTeam(team));
+    const contestIds = contests.map((contest) => contest.id);
+    const publicContestIds = contests
+      .filter((contest) => contest.kind === "public")
+      .map((contest) => contest.id);
+    const privateContestIds = contests
+      .filter((contest) => contest.kind === "private")
+      .map((contest) => contest.id);
+
+    const [playerRows, rosterRows, leaderboardRows] = await Promise.all([
+      teamIds.length
+        ? this.client.player.findMany({
+            where: {
+              teamId: {
+                in: teamIds
+              }
+            }
+          })
+        : Promise.resolve([]),
+      contestIds.length
+        ? this.client.roster.findMany({
+            where: {
+              OR: [
+                publicContestIds.length
+                  ? {
+                      contestId: {
+                        in: publicContestIds
+                      }
+                    }
+                  : undefined,
+                privateContestIds.length
+                  ? {
+                      contestId: {
+                        in: privateContestIds
+                      },
+                      userId
+                    }
+                  : undefined
+              ].filter(Boolean) as Prisma.RosterWhereInput[]
+            }
+          })
+        : Promise.resolve([]),
+      contestIds.length
+        ? this.client.leaderboardEntry.findMany({
+            where: {
+              contestId: {
+                in: contestIds
+              }
+            },
+            orderBy: [{ contestId: "asc" }, { rank: "asc" }]
+          })
+        : Promise.resolve([])
+    ]);
+
+    return {
+      user: mapUsers([userRow])[0],
+      profile: mapProfiles([userRow.profile])[0],
+      contests,
+      leagues,
+      matches,
+      teams,
+      players: mapPlayers(playerRows),
+      rosters: mapRosters(rosterRows),
+      leaderboard: mapLeaderboard(leaderboardRows),
+      questions: predictions.questions,
+      answers: predictions.answers,
+      inventory: mapInventories([inventoryRow])[0],
+      cosmetics: mapCosmetics(cosmeticsRows),
+      badges: mapBadges(badgesRows)
+    };
+  }
+
+  async getVisibleContestsForUser(userId: string): Promise<Contest[]> {
+    const [publicContestRows, privateContestRows] = await Promise.all([
+      this.client.contest.findMany({
+        where: { kind: "public" },
+        orderBy: [{ lockTime: "asc" }]
+      }),
+      this.client.contest.findMany({
+        where: {
+          kind: "private",
+          league: {
+            OR: [{ visibility: "public" }, { members: { some: { userId } } }]
+          }
+        },
+        orderBy: [{ lockTime: "asc" }]
+      })
+    ]);
+
+    return [
+      ...preferredPublicContests(mapContests(publicContestRows)),
+      ...mapContests(privateContestRows)
+    ];
+  }
+
+  async getVisibleLeaguesForUser(userId: string): Promise<League[]> {
+    const rows = await this.client.league.findMany({
+      where: {
+        OR: [{ visibility: "public" }, { members: { some: { userId } } }]
+      },
+      include: {
+        members: {
+          select: { userId: true }
+        },
+        contests: {
+          select: { id: true }
+        }
+      },
+      orderBy: [{ name: "asc" }]
+    });
+
+    return mapLeagues(rows);
+  }
+
+  async getPredictionFeedForUser(userId: string): Promise<PredictionFeedPayload> {
+    const questionRows = await this.client.predictionQuestion.findMany({
+      orderBy: [{ locksAt: "asc" }]
+    });
+    const preferred = preferredQuestions(mapQuestions(questionRows));
+    const questionIds = preferred.map((question) => question.id);
+    const matchIds = [...new Set(preferred.map((question) => question.matchId))];
+    const matchRows = matchIds.length
+      ? await this.client.match.findMany({
+          where: {
+            id: {
+              in: matchIds
+            }
+          }
+        })
+      : [];
+    const matches = mapMatches(matchRows);
+    const teamIds = [
+      ...new Set(matches.flatMap((match) => [match.homeTeamId, match.awayTeamId]))
+    ];
+    const teamRows = teamIds.length
+      ? await this.client.team.findMany({
+          where: {
+            id: {
+              in: teamIds
+            }
+          }
+        })
+      : [];
+    const [answerRows, resultRows] = await Promise.all([
+      questionIds.length
+        ? this.client.predictionAnswer.findMany({
+            where: {
+              userId,
+              questionId: {
+                in: questionIds
+              }
+            }
+          })
+        : Promise.resolve([]),
+      questionIds.length
+        ? this.client.predictionResult.findMany({
+            where: {
+              userId,
+              questionId: {
+                in: questionIds
+              }
+            }
+          })
+        : Promise.resolve([])
+    ]);
+
+    return {
+      questions: normalizeQuestionsForDisplay(preferred, matches, mapTeams(teamRows)),
+      answers: mapAnswers(answerRows),
+      results: mapResults(resultRows)
+    };
+  }
+
+  async getInventoryForUser(
+    userId: string
+  ): Promise<{ inventory: UserInventory; cosmetics: CosmeticItem[] }> {
+    const inventoryRow = await this.client.userInventory.findUnique({
+      where: { userId }
+    });
+    if (!inventoryRow) {
+      throw new Error("Inventory not found.");
+    }
+
+    const inventory = mapInventories([inventoryRow])[0];
+    const cosmetics = inventory.cosmeticIds.length
+      ? mapCosmetics(
+          await this.client.cosmeticItem.findMany({
+            where: {
+              id: {
+                in: inventory.cosmeticIds
+              }
+            }
+          })
+        )
+      : [];
+
+    return { inventory, cosmetics };
+  }
+
+  async getContestLeaderboardEntries(contestId: string): Promise<LeaderboardEntry[]> {
+    return mapLeaderboard(
+      await this.client.leaderboardEntry.findMany({
+        where: { contestId },
+        orderBy: [{ rank: "asc" }, { points: "desc" }]
+      })
+    );
+  }
+
+  async getContestSubscriberIds(contestId: string): Promise<string[]> {
+    const contest = await this.client.contest.findUnique({
+      where: { id: contestId },
+      select: {
+        kind: true,
+        leagueId: true
+      }
+    });
+    if (!contest) {
+      throw new Error("Contest not found.");
+    }
+
+    const [rosterRows, leagueMemberRows, publicUserRows] = await Promise.all([
+      this.client.roster.findMany({
+        where: { contestId },
+        select: { userId: true }
+      }),
+      contest.leagueId
+        ? this.client.leagueMember.findMany({
+            where: { leagueId: contest.leagueId },
+            select: { userId: true }
+          })
+        : Promise.resolve([]),
+      contest.kind === "public"
+        ? this.client.user.findMany({
+            select: { id: true }
+          })
+        : Promise.resolve([])
+    ]);
+
+    return [
+      ...new Set([
+        ...rosterRows.map((row) => row.userId),
+        ...leagueMemberRows.map((row) => row.userId),
+        ...publicUserRows.map((row) => row.id)
+      ])
+    ];
+  }
+
+  async getMatchSubscriberIds(matchId: string): Promise<string[]> {
+    const contestRows = await this.client.contest.findMany({
+      where: { matchId },
+      select: { id: true }
+    });
+    const userIds = new Set<string>();
+
+    for (const contest of contestRows) {
+      const subscribers = await this.getContestSubscriberIds(contest.id);
+      subscribers.forEach((userId) => userIds.add(userId));
+    }
+
+    return [...userIds];
+  }
+
+  async getLeagueMemberIds(leagueId: string): Promise<string[]> {
+    const rows = await this.client.leagueMember.findMany({
+      where: { leagueId },
+      select: { userId: true }
+    });
+
+    if (rows.length === 0) {
+      const exists = await this.client.league.findUnique({
+        where: { id: leagueId },
+        select: { id: true }
+      });
+      if (!exists) {
+        throw new Error("League not found.");
+      }
+    }
+
+    return rows.map((row) => row.userId);
+  }
+
+  async getAllUserIds(): Promise<string[]> {
+    const rows = await this.client.user.findMany({
+      select: { id: true }
+    });
+    return rows.map((row) => row.id);
+  }
+
+  async createLeagueRecord(userId: string, input: CreateLeagueInput): Promise<League> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const leagueId = crypto.randomUUID();
+      const inviteCode = createInviteCode(input.name);
+      const leagueData = {
+        id: leagueId,
+        name: input.name,
+        description: input.description ?? null,
+        visibility: input.visibility,
+        createdBy: userId,
+        inviteCode,
+        bannerStyle: createLeagueBanner(input.visibility)
+      };
+
+      try {
+        const league = await this.client.$transaction(async (tx) => {
+          await tx.league.create({
+            data: leagueData
+          });
+
+          await tx.leagueMember.create({
+            data: {
+              leagueId,
+              userId
+            }
+          });
+
+          await tx.invite.create({
+            data: {
+              id: crypto.randomUUID(),
+              leagueId,
+              code: inviteCode,
+              createdBy: userId
+            }
+          });
+
+          const created = await tx.league.findUniqueOrThrow({
+            where: { id: leagueId },
+            include: {
+              members: {
+                select: { userId: true }
+              },
+              contests: {
+                select: { id: true }
+              }
+            }
+          });
+
+          return toLeagueDto(created);
+        });
+
+        return league;
+      } catch (error) {
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === "P2002"
+        ) {
+          continue;
+        }
+
+        throw error;
+      }
+    }
+
+    throw new Error("Failed to create a unique invite code.");
+  }
+
+  async joinLeagueByInvite(userId: string, input: JoinLeagueInput): Promise<League> {
+    return this.client.$transaction(async (tx) => {
+      const invite = await tx.invite.findUnique({
+        where: { code: input.inviteCode }
+      });
+
+      if (!invite || (invite.expiresAt && invite.expiresAt.getTime() <= Date.now())) {
+        throw new Error("Invite code is invalid.");
+      }
+
+      await tx.leagueMember.upsert({
+        where: {
+          leagueId_userId: {
+            leagueId: invite.leagueId,
+            userId
+          }
+        },
+        update: {},
+        create: {
+          leagueId: invite.leagueId,
+          userId
+        }
+      });
+
+      const league = await tx.league.findUniqueOrThrow({
+        where: { id: invite.leagueId },
+        include: {
+          members: {
+            select: { userId: true }
+          },
+          contests: {
+            select: { id: true }
+          }
+        }
+      });
+
+      return toLeagueDto(league);
+    });
+  }
+
+  async submitRosterRecord(
+    userId: string,
+    contestId: string,
+    input: SubmitRosterInput | BuildRosterInput
+  ): Promise<Roster> {
+    return this.client.$transaction(async (tx) => {
+      const contestRow = await tx.contest.findUnique({
+        where: { id: contestId }
+      });
+      if (!contestRow) {
+        throw new Error("Contest not found.");
+      }
+
+      const contest = mapContests([contestRow])[0];
+      const matchRow = await tx.match.findUnique({
+        where: { id: contest.matchId }
+      });
+      if (!matchRow) {
+        throw new Error("Match not found.");
+      }
+
+      const match = mapMatches([matchRow])[0];
+      const [matchPlayersRows, profileRow, existingRow] = await Promise.all([
+        tx.player.findMany({
+          where: {
+            teamId: {
+              in: [match.homeTeamId, match.awayTeamId]
+            }
+          }
+        }),
+        tx.profile.findUnique({
+          where: { userId }
+        }),
+        tx.roster.findUnique({
+          where: {
+            contestId_userId: {
+              contestId,
+              userId
+            }
+          }
+        })
+      ]);
+
+      if (!profileRow) {
+        throw new Error("Unknown profile.");
+      }
+
+      const matchPlayers = mapPlayers(matchPlayersRows);
+      const validation = validateRoster(contest, match, matchPlayers, input, new Date());
+      if (!validation.valid) {
+        throw new Error(validation.errors.join(" "));
+      }
+
+      const previousSpend = existingRow?.totalCredits ?? 0;
+      const nextSpend = validation.totalCredits;
+      const creditDelta = Math.round((nextSpend - previousSpend) * 10) / 10;
+      if (creditDelta > profileRow.credits) {
+        const shortfall = Math.round((creditDelta - profileRow.credits) * 10) / 10;
+        throw new Error(
+          `Not enough credits. You need ${shortfall.toFixed(1)} more credits to save this roster.`
+        );
+      }
+
+      const submittedAt = new Date();
+      const rosterPayload = {
+        contestId,
+        userId,
+        players: input.playerIds.map((playerId) => ({ playerId })),
+        captainPlayerId: input.captainPlayerId,
+        viceCaptainPlayerId: input.viceCaptainPlayerId,
+        impactPlayerId: "impactPlayerId" in input ? input.impactPlayerId ?? null : null,
+        totalCredits: validation.totalCredits,
+        submittedAt,
+        locked: submittedAt >= new Date(contest.lockTime),
+        hasUncappedPlayer: validation.hasUncappedPlayer
+      };
+
+      const savedRoster = await tx.roster.upsert({
+        where: {
+          contestId_userId: {
+            contestId,
+            userId
+          }
+        },
+        update: rosterPayload,
+        create: {
+          id: existingRow?.id ?? crypto.randomUUID(),
+          ...rosterPayload
+        }
+      });
+
+      await tx.profile.update({
+        where: { userId },
+        data: {
+          credits: Math.round((profileRow.credits - creditDelta) * 10) / 10
+        }
+      });
+
+      const [rosterRows, eventRows, previousEntries] = await Promise.all([
+        tx.roster.findMany({
+          where: { contestId }
+        }),
+        tx.fantasyScoreEvent.findMany({
+          where: { matchId: contest.matchId }
+        }),
+        tx.leaderboardEntry.findMany({
+          where: { contestId }
+        })
+      ]);
+
+      const leaderboardEntries = buildLeaderboardEntries(
+        contest,
+        mapRosters(rosterRows),
+        matchPlayers,
+        mapScoreEvents(eventRows),
+        mapLeaderboard(previousEntries)
+      );
+
+      await tx.leaderboardEntry.deleteMany({
+        where: { contestId }
+      });
+
+      if (leaderboardEntries.length) {
+        await tx.leaderboardEntry.createMany({
+          data: leaderboardEntries.map((entry) => ({
+            id: entry.id,
+            contestId: entry.contestId,
+            userId: entry.userId,
+            points: entry.points,
+            rank: entry.rank,
+            previousRank: entry.previousRank,
+            trend: entry.trend,
+            projectedPoints: entry.projectedPoints ?? null
+          }))
+        });
+      }
+
+      return toRosterDto(savedRoster);
+    });
+  }
+
+  async answerPredictionRecord(
+    userId: string,
+    questionId: string,
+    input: PredictionAnswerInput
+  ): Promise<PredictionAnswer> {
+    return this.client.$transaction(async (tx) => {
+      const questionRow = await tx.predictionQuestion.findUnique({
+        where: { id: questionId }
+      });
+      if (!questionRow) {
+        throw new Error("Prediction question not found.");
+      }
+
+      const question = mapQuestions([questionRow])[0];
+      if (!canSubmitPrediction(question)) {
+        throw new Error("Prediction is locked.");
+      }
+
+      if (!question.options.some((option) => option.id === input.optionId)) {
+        throw new Error("Prediction option not found.");
+      }
+
+      const answer = await tx.predictionAnswer.upsert({
+        where: {
+          questionId_userId: {
+            questionId,
+            userId
+          }
+        },
+        update: {
+          optionId: input.optionId,
+          submittedAt: new Date()
+        },
+        create: {
+          id: crypto.randomUUID(),
+          questionId,
+          userId,
+          optionId: input.optionId,
+          submittedAt: new Date()
+        }
+      });
+
+      return mapAnswers([answer])[0];
+    });
+  }
+
+  async settlePredictionRecord(
+    questionId: string,
+    correctOptionId: string
+  ): Promise<{ settledCount: number; correctOptionId: string }> {
+    return this.client.$transaction(async (tx) => {
+      const questionRow = await tx.predictionQuestion.findUnique({
+        where: { id: questionId }
+      });
+      if (!questionRow) {
+        throw new Error("Prediction question not found.");
+      }
+
+      const question = mapQuestions([questionRow])[0];
+      if (question.state === "settled") {
+        throw new Error("Prediction already settled.");
+      }
+
+      if (!question.options.some((option) => option.id === correctOptionId)) {
+        throw new Error("Prediction option not found.");
+      }
+
+      const answerRows = await tx.predictionAnswer.findMany({
+        where: { questionId }
+      });
+      const answers = mapAnswers(answerRows);
+      const userIds = [...new Set(answers.map((answer) => answer.userId))];
+      const [profileRows, inventoryRows, cosmeticRows] = await Promise.all([
+        tx.profile.findMany({
+          where: {
+            userId: {
+              in: userIds
+            }
+          }
+        }),
+        tx.userInventory.findMany({
+          where: {
+            userId: {
+              in: userIds
+            }
+          }
+        }),
+        question.cosmeticRewardId
+          ? tx.cosmeticItem.findMany({
+              where: { id: question.cosmeticRewardId }
+            })
+          : Promise.resolve([])
+      ]);
+
+      const profiles = new Map(mapProfiles(profileRows).map((profile) => [profile.userId, profile]));
+      const inventories = new Map(
+        mapInventories(inventoryRows).map((inventory) => [inventory.userId, inventory])
+      );
+      const cosmetic = question.cosmeticRewardId
+        ? mapCosmetics(cosmeticRows)[0]
+        : undefined;
+      const settledAt = new Date().toISOString();
+      const nextResults: PredictionResult[] = [];
+      const nextTransactions: XPTransaction[] = [];
+      const nextUnlocks: CosmeticUnlock[] = [];
+
+      for (const answer of answers) {
+        const profile = profiles.get(answer.userId);
+        const inventory = inventories.get(answer.userId);
+        if (!profile || !inventory) {
+          continue;
+        }
+
+        const settled = settlePredictionAnswer(
+          question,
+          answer,
+          correctOptionId,
+          profile.streak,
+          settledAt
+        );
+        nextResults.push(settled.result);
+        nextTransactions.push(settled.transaction);
+
+        profile.xp += settled.result.awardedXp;
+        profile.level = levelFromXp(profile.xp);
+        profile.streak = settled.result.streak;
+
+        if (
+          settled.result.awardedBadgeId &&
+          !inventory.badgeIds.includes(settled.result.awardedBadgeId)
+        ) {
+          inventory.badgeIds = [...inventory.badgeIds, settled.result.awardedBadgeId];
+        }
+
+        if (settled.result.awardedCosmeticId && cosmetic) {
+          const unlocked = unlockCosmetic(
+            inventory,
+            answer.userId,
+            cosmetic,
+            "prediction",
+            settledAt
+          );
+          inventories.set(answer.userId, unlocked.inventory);
+          if (unlocked.unlock) {
+            nextUnlocks.push(unlocked.unlock);
+          }
+        }
+      }
+
+      await tx.predictionQuestion.update({
+        where: { id: questionId },
+        data: {
+          state: "settled"
+        }
+      });
+
+      await tx.predictionResult.deleteMany({
+        where: { questionId }
+      });
+      if (nextResults.length) {
+        await tx.predictionResult.createMany({
+          data: nextResults.map((result) => ({
+            id: result.id,
+            questionId: result.questionId,
+            userId: result.userId,
+            correctOptionId: result.correctOptionId,
+            awardedXp: result.awardedXp,
+            awardedBadgeId: result.awardedBadgeId ?? null,
+            awardedCosmeticId: result.awardedCosmeticId ?? null,
+            streak: result.streak,
+            settledAt: new Date(result.settledAt)
+          }))
+        });
+      }
+
+      if (nextTransactions.length) {
+        await tx.xPTransaction.createMany({
+          data: nextTransactions.map((entry) => ({
+            id: entry.id,
+            userId: entry.userId,
+            source: entry.source,
+            amount: entry.amount,
+            description: entry.description,
+            createdAt: new Date(entry.createdAt)
+          }))
+        });
+      }
+
+      for (const profile of profiles.values()) {
+        await tx.profile.update({
+          where: { userId: profile.userId },
+          data: {
+            xp: profile.xp,
+            level: profile.level,
+            streak: profile.streak
+          }
+        });
+      }
+
+      for (const inventory of inventories.values()) {
+        await tx.userInventory.update({
+          where: { userId: inventory.userId },
+          data: {
+            badgeIds: inventory.badgeIds,
+            cosmeticIds: inventory.cosmeticIds,
+            equipped: inputJson(inventory.equipped)
+          }
+        });
+      }
+
+      if (nextUnlocks.length) {
+        await tx.cosmeticUnlock.createMany({
+          data: nextUnlocks.map((unlock) => ({
+            id: unlock.id,
+            userId: unlock.userId,
+            cosmeticId: unlock.cosmeticId,
+            source: unlock.source,
+            unlockedAt: new Date(unlock.unlockedAt)
+          })),
+          skipDuplicates: true
+        });
+      }
+
+      return {
+        settledCount: answers.length,
+        correctOptionId
+      };
+    });
+  }
+
+  async equipCosmeticRecord(userId: string, cosmeticId: string): Promise<{ cosmeticId: string }> {
+    return this.client.$transaction(async (tx) => {
+      const [inventoryRow, profileRow, cosmeticRow] = await Promise.all([
+        tx.userInventory.findUnique({
+          where: { userId }
+        }),
+        tx.profile.findUnique({
+          where: { userId }
+        }),
+        tx.cosmeticItem.findUnique({
+          where: { id: cosmeticId }
+        })
+      ]);
+
+      if (!inventoryRow) {
+        throw new Error("Inventory not found.");
+      }
+
+      if (!profileRow) {
+        throw new Error("Unknown profile.");
+      }
+
+      if (!cosmeticRow) {
+        throw new Error("Cosmetic not found.");
+      }
+
+      const updated = equipCosmetic(
+        mapInventories([inventoryRow])[0],
+        mapProfiles([profileRow])[0],
+        mapCosmetics([cosmeticRow])[0]
+      );
+
+      await Promise.all([
+        tx.userInventory.update({
+          where: { userId },
+          data: {
+            cosmeticIds: updated.inventory.cosmeticIds,
+            badgeIds: updated.inventory.badgeIds,
+            equipped: inputJson(updated.inventory.equipped)
+          }
+        }),
+        tx.profile.update({
+          where: { userId },
+          data: {
+            equippedCosmetics: inputJson(updated.profile.equippedCosmetics)
+          }
+        })
+      ]);
+
+      return { cosmeticId };
+    });
+  }
+
+  async applyCorrectionRecord(
+    matchId: string,
+    playerId: string,
+    label: string,
+    points: number
+  ): Promise<{ status: string }> {
+    return this.client.$transaction(async (tx) => {
+      const match = await tx.match.findUnique({
+        where: { id: matchId }
+      });
+      if (!match) {
+        throw new Error("Match not found.");
+      }
+
+      await tx.fantasyScoreEvent.create({
+        data: {
+          id: crypto.randomUUID(),
+          matchId,
+          playerId,
+          label,
+          points
+        }
+      });
+
+      const [contestRows, playerRows, scoreEventRows] = await Promise.all([
+        tx.contest.findMany({
+          where: { matchId }
+        }),
+        tx.player.findMany({
+          where: {
+            teamId: {
+              in: [match.homeTeamId, match.awayTeamId]
+            }
+          }
+        }),
+        tx.fantasyScoreEvent.findMany({
+          where: { matchId }
+        })
+      ]);
+
+      const players = mapPlayers(playerRows);
+      const events = mapScoreEvents(scoreEventRows);
+      const nextEntries: LeaderboardEntry[] = [];
+
+      for (const contest of mapContests(contestRows)) {
+        const [rosterRows, previousEntries] = await Promise.all([
+          tx.roster.findMany({
+            where: { contestId: contest.id }
+          }),
+          tx.leaderboardEntry.findMany({
+            where: { contestId: contest.id }
+          })
+        ]);
+
+        nextEntries.push(
+          ...buildLeaderboardEntries(
+            contest,
+            mapRosters(rosterRows),
+            players,
+            events,
+            mapLeaderboard(previousEntries)
+          )
+        );
+      }
+
+      await tx.leaderboardEntry.deleteMany({
+        where: {
+          contestId: {
+            in: contestRows.map((contest) => contest.id)
+          }
+        }
+      });
+
+      if (nextEntries.length) {
+        await tx.leaderboardEntry.createMany({
+          data: nextEntries.map((entry) => ({
+            id: entry.id,
+            contestId: entry.contestId,
+            userId: entry.userId,
+            points: entry.points,
+            rank: entry.rank,
+            previousRank: entry.previousRank,
+            trend: entry.trend,
+            projectedPoints: entry.projectedPoints ?? null
+          }))
+        });
+      }
+
+      return { status: "corrected" };
+    });
+  }
+
+  async rebuildAllLeaderboards(): Promise<void> {
+    const contestRows = await this.client.contest.findMany();
+    for (const contestRow of contestRows) {
+      const contest = mapContests([contestRow])[0];
+      const match = await this.client.match.findUnique({
+        where: { id: contest.matchId }
+      });
+      if (!match) {
+        continue;
+      }
+
+      const [rosterRows, playerRows, eventRows, previousEntries] = await Promise.all([
+        this.client.roster.findMany({
+          where: { contestId: contest.id }
+        }),
+        this.client.player.findMany({
+          where: {
+            teamId: {
+              in: [match.homeTeamId, match.awayTeamId]
+            }
+          }
+        }),
+        this.client.fantasyScoreEvent.findMany({
+          where: { matchId: contest.matchId }
+        }),
+        this.client.leaderboardEntry.findMany({
+          where: { contestId: contest.id }
+        })
+      ]);
+
+      const entries = buildLeaderboardEntries(
+        contest,
+        mapRosters(rosterRows),
+        mapPlayers(playerRows),
+        mapScoreEvents(eventRows),
+        mapLeaderboard(previousEntries)
+      );
+
+      await this.client.$transaction(async (tx) => {
+        await tx.leaderboardEntry.deleteMany({
+          where: { contestId: contest.id }
+        });
+
+        if (entries.length) {
+          await tx.leaderboardEntry.createMany({
+            data: entries.map((entry) => ({
+              id: entry.id,
+              contestId: entry.contestId,
+              userId: entry.userId,
+              points: entry.points,
+              rank: entry.rank,
+              previousRank: entry.previousRank,
+              trend: entry.trend,
+              projectedPoints: entry.projectedPoints ?? null
+            }))
+          });
+        }
+      });
+    }
+  }
+
+  async applyProviderSnapshot(snapshot: ProviderSyncSnapshot): Promise<void> {
+    await this.client.$transaction(async (tx) => {
+      const [
+        currentContestRows,
+        currentQuestionRows,
+        currentMatchRows,
+        currentPlayerRows,
+        currentTeamRows
+      ] = await Promise.all([
+        tx.contest.findMany({
+          where: {
+            id: {
+              startsWith: "provider:"
+            }
+          },
+          select: { id: true }
+        }),
+        tx.predictionQuestion.findMany({
+          where: {
+            id: {
+              startsWith: "provider:"
+            }
+          },
+          select: { id: true }
+        }),
+        tx.match.findMany({
+          where: {
+            id: {
+              startsWith: "provider:"
+            }
+          },
+          select: { id: true }
+        }),
+        tx.player.findMany({
+          where: {
+            id: {
+              startsWith: "provider:"
+            }
+          },
+          select: { id: true }
+        }),
+        tx.team.findMany({
+          where: {
+            id: {
+              startsWith: "provider:"
+            }
+          },
+          select: { id: true }
+        })
+      ]);
+
+      const snapshotContestIds = new Set(snapshot.contests.map((contest) => contest.id));
+      const snapshotQuestionIds = new Set(snapshot.questions.map((question) => question.id));
+      const snapshotMatchIds = new Set(snapshot.matches.map((match) => match.id));
+      const snapshotPlayerIds = new Set(snapshot.players.map((player) => player.id));
+      const snapshotTeamIds = new Set(snapshot.teams.map((team) => team.id));
+
+      const removedContestIds = currentContestRows
+        .map((row) => row.id)
+        .filter((id) => !snapshotContestIds.has(id));
+      const removedQuestionIds = currentQuestionRows
+        .map((row) => row.id)
+        .filter((id) => !snapshotQuestionIds.has(id));
+      const removedMatchIds = currentMatchRows
+        .map((row) => row.id)
+        .filter((id) => !snapshotMatchIds.has(id));
+      const removedPlayerIds = currentPlayerRows
+        .map((row) => row.id)
+        .filter((id) => !snapshotPlayerIds.has(id));
+      const removedTeamIds = currentTeamRows
+        .map((row) => row.id)
+        .filter((id) => !snapshotTeamIds.has(id));
+
+      for (const team of snapshot.teams) {
+        await tx.team.upsert({
+          where: { id: team.id },
+          update: {
+            name: team.name,
+            shortName: team.shortName,
+            city: team.city
+          },
+          create: team
+        });
+      }
+
+      for (const player of snapshot.players) {
+        await tx.player.upsert({
+          where: { id: player.id },
+          update: {
+            name: player.name,
+            teamId: player.teamId,
+            role: player.role,
+            credits: player.credits,
+            rating: player.rating,
+            nationality: player.nationality,
+            selectionPercent: player.selectionPercent
+          },
+          create: {
+            id: player.id,
+            name: player.name,
+            teamId: player.teamId,
+            role: player.role,
+            credits: player.credits,
+            rating: player.rating,
+            nationality: player.nationality,
+            selectionPercent: player.selectionPercent
+          }
+        });
+      }
+
+      for (const match of snapshot.matches) {
+        await tx.match.upsert({
+          where: { id: match.id },
+          update: {
+            homeTeamId: match.homeTeamId,
+            awayTeamId: match.awayTeamId,
+            startsAt: new Date(match.startsAt),
+            venue: match.venue,
+            state: match.state
+          },
+          create: {
+            id: match.id,
+            homeTeamId: match.homeTeamId,
+            awayTeamId: match.awayTeamId,
+            startsAt: new Date(match.startsAt),
+            venue: match.venue,
+            state: match.state
+          }
+        });
+      }
+
+      for (const contest of snapshot.contests) {
+        await tx.contest.upsert({
+          where: { id: contest.id },
+          update: {
+            name: contest.name,
+            kind: contest.kind,
+            matchId: contest.matchId,
+            leagueId: contest.leagueId ?? null,
+            salaryCap: contest.salaryCap,
+            rosterRules: inputJson(contest.rosterRules),
+            iplRules: inputJson(contest.iplRules),
+            lockTime: new Date(contest.lockTime),
+            rewards: inputJson(contest.rewards)
+          },
+          create: {
+            id: contest.id,
+            name: contest.name,
+            kind: contest.kind,
+            matchId: contest.matchId,
+            leagueId: contest.leagueId ?? null,
+            salaryCap: contest.salaryCap,
+            rosterRules: inputJson(contest.rosterRules),
+            iplRules: inputJson(contest.iplRules),
+            lockTime: new Date(contest.lockTime),
+            rewards: inputJson(contest.rewards)
+          }
+        });
+      }
+
+      for (const question of snapshot.questions) {
+        await tx.predictionQuestion.upsert({
+          where: { id: question.id },
+          update: {
+            matchId: question.matchId,
+            prompt: question.prompt,
+            category: question.category,
+            options: inputJson(question.options),
+            locksAt: new Date(question.locksAt),
+            resolvesAt: new Date(question.resolvesAt),
+            state: question.state,
+            xpReward: question.xpReward,
+            badgeRewardId: question.badgeRewardId ?? null,
+            cosmeticRewardId: question.cosmeticRewardId ?? null
+          },
+          create: {
+            id: question.id,
+            matchId: question.matchId,
+            prompt: question.prompt,
+            category: question.category,
+            options: inputJson(question.options),
+            locksAt: new Date(question.locksAt),
+            resolvesAt: new Date(question.resolvesAt),
+            state: question.state,
+            xpReward: question.xpReward,
+            badgeRewardId: question.badgeRewardId ?? null,
+            cosmeticRewardId: question.cosmeticRewardId ?? null
+          }
+        });
+      }
+
+      await tx.fantasyScoreEvent.deleteMany({
+        where: {
+          matchId: {
+            startsWith: "provider:"
+          }
+        }
+      });
+
+      if (snapshot.scoreEvents.length) {
+        await tx.fantasyScoreEvent.createMany({
+          data: snapshot.scoreEvents.map((event) => ({
+            id: event.id,
+            matchId: event.matchId,
+            playerId: event.playerId,
+            label: event.label,
+            points: event.points,
+            createdAt: new Date(event.createdAt)
+          }))
+        });
+      }
+
+      const providerRosters = mapRosters(
+        await tx.roster.findMany({
+          where: {
+            contestId: {
+              startsWith: "provider:"
+            }
+          }
+        })
+      );
+      const invalidProviderRosterIds = providerRosters
+        .filter((roster) => {
+          if (!snapshotContestIds.has(roster.contestId)) {
+            return true;
+          }
+
+          if (
+            !snapshotPlayerIds.has(roster.captainPlayerId) ||
+            !snapshotPlayerIds.has(roster.viceCaptainPlayerId)
+          ) {
+            return true;
+          }
+
+          return roster.players.some((player) => !snapshotPlayerIds.has(player.playerId));
+        })
+        .map((roster) => roster.id);
+
+      if (invalidProviderRosterIds.length) {
+        await tx.roster.deleteMany({
+          where: {
+            id: {
+              in: invalidProviderRosterIds
+            }
+          }
+        });
+      }
+
+      if (removedContestIds.length) {
+        await tx.leaderboardEntry.deleteMany({
+          where: {
+            contestId: {
+              in: removedContestIds
+            }
+          }
+        });
+        await tx.roster.deleteMany({
+          where: {
+            contestId: {
+              in: removedContestIds
+            }
+          }
+        });
+        await tx.contest.deleteMany({
+          where: {
+            id: {
+              in: removedContestIds
+            }
+          }
+        });
+      }
+
+      if (removedQuestionIds.length) {
+        await tx.predictionAnswer.deleteMany({
+          where: {
+            questionId: {
+              in: removedQuestionIds
+            }
+          }
+        });
+        await tx.predictionResult.deleteMany({
+          where: {
+            questionId: {
+              in: removedQuestionIds
+            }
+          }
+        });
+        await tx.predictionQuestion.deleteMany({
+          where: {
+            id: {
+              in: removedQuestionIds
+            }
+          }
+        });
+      }
+
+      if (removedMatchIds.length) {
+        await tx.match.deleteMany({
+          where: {
+            id: {
+              in: removedMatchIds
+            }
+          }
+        });
+      }
+
+      if (removedPlayerIds.length) {
+        await tx.player.deleteMany({
+          where: {
+            id: {
+              in: removedPlayerIds
+            }
+          }
+        });
+      }
+
+      if (removedTeamIds.length) {
+        await tx.team.deleteMany({
+          where: {
+            id: {
+              in: removedTeamIds
+            }
+          }
+        });
+      }
+
+      const providerContests = snapshot.contests;
+      const providerEvents = snapshot.scoreEvents;
+      const matchMap = new Map(snapshot.matches.map((match) => [match.id, match]));
+      const refreshedRosters = mapRosters(
+        await tx.roster.findMany({
+          where: {
+            contestId: {
+              in: providerContests.map((contest) => contest.id)
+            }
+          }
+        })
+      );
+      const previousEntries = mapLeaderboard(
+        await tx.leaderboardEntry.findMany({
+          where: {
+            contestId: {
+              startsWith: "provider:"
+            }
+          }
+        })
+      );
+      const previousEntriesByContest = new Map<string, LeaderboardEntry[]>();
+      for (const entry of previousEntries) {
+        const entries = previousEntriesByContest.get(entry.contestId) ?? [];
+        entries.push(entry);
+        previousEntriesByContest.set(entry.contestId, entries);
+      }
+
+      await tx.leaderboardEntry.deleteMany({
+        where: {
+          contestId: {
+            startsWith: "provider:"
+          }
+        }
+      });
+
+      const nextEntries: LeaderboardEntry[] = [];
+      for (const contest of providerContests) {
+        const match = matchMap.get(contest.matchId);
+        if (!match) {
+          continue;
+        }
+
+        const contestPlayers = snapshot.players.filter(
+          (player) =>
+            player.teamId === match.homeTeamId || player.teamId === match.awayTeamId
+        );
+        const contestEvents = providerEvents.filter((event) => event.matchId === contest.matchId);
+        const contestRosters = refreshedRosters.filter((roster) => roster.contestId === contest.id);
+        const previousContestEntries = previousEntriesByContest.get(contest.id) ?? [];
+
+        nextEntries.push(
+          ...buildLeaderboardEntries(
+            contest,
+            contestRosters,
+            contestPlayers,
+            contestEvents,
+            previousContestEntries
+          )
+        );
+      }
+
+      if (nextEntries.length) {
+        await tx.leaderboardEntry.createMany({
+          data: nextEntries.map((entry) => ({
+            id: entry.id,
+            contestId: entry.contestId,
+            userId: entry.userId,
+            points: entry.points,
+            rank: entry.rank,
+            previousRank: entry.previousRank,
+            trend: entry.trend,
+            projectedPoints: entry.projectedPoints ?? null
+          }))
+        });
+      }
+
+      await tx.providerState.upsert({
+        where: { id: "default" },
+        update: {
+          status: "ready",
+          syncedAt: new Date(snapshot.syncedAt),
+          lastAttemptedAt: new Date()
+        },
+        create: {
+          id: "default",
+          status: "ready",
+          syncedAt: new Date(snapshot.syncedAt),
+          lastAttemptedAt: new Date()
+        }
+      });
+    }, SNAPSHOT_TRANSACTION_OPTIONS);
+  }
+
   async initialize(seedStore: AppStore): Promise<void> {
+    await this.ensureRuntimeCompatibility();
+
     const userCount = await this.client.user.count();
     if (userCount === 0) {
       await this.replaceStore(seedStore);
       return;
     }
 
-    const store = await this.loadStore();
-    let changed = false;
-
-    const credentialUserIds = new Set(store.credentials.map((credential) => credential.userId));
-    for (const user of store.users) {
-      if (credentialUserIds.has(user.id)) {
-        continue;
+    await this.client.profile.updateMany({
+      where: {
+        onboardingCompleted: false,
+        username: { not: "" },
+        favoriteTeamId: { not: null }
+      },
+      data: {
+        onboardingCompleted: true
       }
-
-      store.credentials.push({
-        userId: user.id,
-        passwordHash: hashPasswordSync("password123"),
-        updatedAt: new Date().toISOString()
-      });
-      changed = true;
-    }
-
-    for (const profile of store.profiles) {
-      if (profile.onboardingCompleted || !profile.username || !profile.favoriteTeamId) {
-        continue;
-      }
-
-      profile.onboardingCompleted = true;
-      changed = true;
-    }
-
-    if (changed) {
-      await this.replaceStore(store);
-    }
+    });
   }
 
   async loadStore(): Promise<AppStore> {
@@ -382,26 +2296,81 @@ export class PrismaAppRepository implements AppRepository {
       this.client.session.findMany(),
       this.client.authCredential.findMany(),
       this.client.user.findMany(),
-      this.client.profile.findMany(),
-      this.client.friendship.findMany(),
+      this.client.profile.findMany({
+        select: {
+          userId: true,
+          username: true,
+          bio: true,
+          favoriteTeamId: true,
+          credits: true,
+          xp: true,
+          level: true,
+          streak: true,
+          onboardingCompleted: true,
+          equippedCosmetics: true
+        }
+      }),
+      this.client.friendship.findMany({
+        select: {
+          id: true,
+          requesterId: true,
+          addresseeId: true,
+          status: true,
+          createdAt: true
+        }
+      }),
       this.client.invite.findMany(),
       this.client.team.findMany(),
       this.client.player.findMany(),
       this.client.match.findMany(),
       this.client.contest.findMany(),
-      this.client.league.findMany(),
+      this.client.league.findMany({
+        include: {
+          members: {
+            select: {
+              userId: true
+            }
+          },
+          contests: {
+            select: {
+              id: true
+            }
+          }
+        }
+      }),
       this.client.roster.findMany(),
       this.client.fantasyScoreEvent.findMany(),
       this.client.leaderboardEntry.findMany(),
       this.client.predictionQuestion.findMany(),
       this.client.predictionAnswer.findMany(),
       this.client.predictionResult.findMany(),
-      this.client.cosmeticItem.findMany(),
+      this.client.cosmeticItem.findMany({
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          category: true,
+          rarity: true,
+          themeToken: true,
+          gameplayAffecting: true,
+          transferable: true,
+          redeemable: true,
+          resaleValue: true
+        }
+      }),
       this.client.cosmeticUnlock.findMany(),
       this.client.userInventory.findMany(),
       this.client.badge.findMany(),
       this.client.xPTransaction.findMany(),
-      this.client.providerState.findUnique({ where: { id: "default" } })
+      this.client.providerState.findUnique({
+        where: { id: "default" },
+        select: {
+          id: true,
+          status: true,
+          syncedAt: true,
+          lastAttemptedAt: true
+        }
+      }) as Promise<ProviderStateRow | null>
     ]);
 
     return {
@@ -430,11 +2399,13 @@ export class PrismaAppRepository implements AppRepository {
       provider: provider
         ? {
             status: provider.status as AppStore["provider"]["status"],
-            syncedAt: provider.syncedAt.toISOString()
+            syncedAt: provider.syncedAt.toISOString(),
+            lastAttemptedAt: provider.lastAttemptedAt.toISOString()
           }
         : {
             status: "idle",
-            syncedAt: new Date(0).toISOString()
+            syncedAt: new Date(0).toISOString(),
+            lastAttemptedAt: new Date(0).toISOString()
           }
     };
   }
@@ -493,6 +2464,7 @@ export class PrismaAppRepository implements AppRepository {
             username: profile.username,
             bio: profile.bio ?? null,
             favoriteTeamId: profile.favoriteTeamId ?? null,
+            credits: profile.credits,
             xp: profile.xp,
             level: profile.level,
             streak: profile.streak,
@@ -530,6 +2502,7 @@ export class PrismaAppRepository implements AppRepository {
             id: friendship.id,
             requesterId: friendship.requesterId,
             addresseeId: friendship.addresseeId,
+            pairKey: friendshipPairKey(friendship.requesterId, friendship.addresseeId),
             status: friendship.status,
             createdAt: new Date(friendship.createdAt)
           }))
@@ -579,10 +2552,21 @@ export class PrismaAppRepository implements AppRepository {
             visibility: league.visibility,
             createdBy: league.createdBy,
             inviteCode: league.inviteCode,
-            memberIds: league.memberIds,
-            contestIds: league.contestIds,
             bannerStyle: league.bannerStyle
           }))
+        });
+      }
+
+      const leagueMembers = store.leagues.flatMap((league) =>
+        league.memberIds.map((userId) => ({
+          leagueId: league.id,
+          userId
+        }))
+      );
+
+      if (leagueMembers.length) {
+        await tx.leagueMember.createMany({
+          data: leagueMembers
         });
       }
 
@@ -707,7 +2691,7 @@ export class PrismaAppRepository implements AppRepository {
       if (store.results.length) {
         await tx.predictionResult.createMany({
           data: store.results.map((result) => ({
-            id: `${result.questionId}-${result.userId}`,
+            id: result.id,
             questionId: result.questionId,
             userId: result.userId,
             correctOptionId: result.correctOptionId,
@@ -762,13 +2746,55 @@ export class PrismaAppRepository implements AppRepository {
         });
       }
 
+      const providerStateData: ProviderStateCreateInput = {
+        id: "default",
+        status: store.provider.status,
+        syncedAt: new Date(store.provider.syncedAt),
+        lastAttemptedAt: new Date(store.provider.lastAttemptedAt)
+      };
+
       await tx.providerState.create({
-        data: {
-          id: "default",
-          status: store.provider.status,
-          syncedAt: new Date(store.provider.syncedAt)
-        }
+        data: providerStateData
       });
     }, SNAPSHOT_TRANSACTION_OPTIONS);
+  }
+
+  async updateProviderState(patch: Partial<AppStore["provider"]>): Promise<void> {
+    const existing = (await this.client.providerState.findUnique({
+      where: { id: "default" },
+      select: {
+        id: true,
+        status: true,
+        syncedAt: true,
+        lastAttemptedAt: true
+      }
+    })) as ProviderStateRow | null;
+
+    const updateData: ProviderStateUpdateInput = {
+      status: patch.status ?? existing?.status ?? "idle",
+      syncedAt: patch.syncedAt
+        ? new Date(patch.syncedAt)
+        : existing?.syncedAt ?? new Date(0),
+      lastAttemptedAt: patch.lastAttemptedAt
+        ? new Date(patch.lastAttemptedAt)
+        : existing?.lastAttemptedAt ?? new Date(0)
+    };
+
+    const createData: ProviderStateCreateInput = {
+      id: "default",
+      status: patch.status ?? existing?.status ?? "idle",
+      syncedAt: patch.syncedAt
+        ? new Date(patch.syncedAt)
+        : existing?.syncedAt ?? new Date(0),
+      lastAttemptedAt: patch.lastAttemptedAt
+        ? new Date(patch.lastAttemptedAt)
+        : existing?.lastAttemptedAt ?? new Date(0)
+    };
+
+    await this.client.providerState.upsert({
+      where: { id: "default" },
+      update: updateData,
+      create: createData
+    });
   }
 }

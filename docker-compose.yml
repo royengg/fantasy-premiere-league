@@ -1,6 +1,23 @@
 version: "3.9"
 
 services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: fantasy_cricket
+      POSTGRES_USER: fantasy
+      POSTGRES_PASSWORD: fantasy
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fantasy -d fantasy_cricket"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -10,4 +27,5 @@ services:
       - redis_data:/data
 
 volumes:
+  postgres_data:
   redis_data:

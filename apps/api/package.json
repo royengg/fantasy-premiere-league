@@ -18,7 +18,6 @@
     "@fantasy-cricket/validators": "workspace:*",
     "@prisma/adapter-neon": "7.5.0",
     "@prisma/client": "7.5.0",
-    "bullmq": "^5.16.0",
     "cors": "^2.8.5",
     "express": "^5.2.1",
     "socket.io": "^4.8.0"

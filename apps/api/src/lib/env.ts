@@ -96,7 +96,7 @@ export function loadEnv(): Env {
     REDIS_URL: process.env.REDIS_URL ?? "",
     PROVIDER_API_KEY: process.env.PROVIDER_API_KEY ?? "demo-provider-key",
     CRICKET_DATA_API_KEY: process.env.CRICKET_DATA_API_KEY ?? "",
-    CRICKET_DATA_BASE_URL: process.env.CRICKET_DATA_BASE_URL ?? "https://api.crickdata.org/v1",
+    CRICKET_DATA_BASE_URL: process.env.CRICKET_DATA_BASE_URL ?? "https://api.cricapi.com/v1",
     CRICKET_DATA_CACHE_TTL: Number(process.env.CRICKET_DATA_CACHE_TTL ?? 300),
     CRICKET_DATA_LIVE_CACHE_TTL: Number(process.env.CRICKET_DATA_LIVE_CACHE_TTL ?? 30)
   };

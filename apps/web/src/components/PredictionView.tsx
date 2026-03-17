@@ -1,16 +1,24 @@
 import { useState } from "react";
 import { Target, Clock, Star, CheckCircle, Flame } from "lucide-react";
-import type { PredictionAnswer, PredictionQuestion } from "@fantasy-cricket/types";
+import type { PredictionAnswer, PredictionQuestion, Team } from "@fantasy-cricket/types";
+import { getTeamPalette } from "../lib/team-branding";
 
 interface PredictionViewProps {
   questions: PredictionQuestion[];
   answers: PredictionAnswer[];
   streak: number;
+  teams: Team[];
   onAnswer: (questionId: string, optionId: string) => Promise<unknown>;
 }
 
-export function PredictionView({ questions, answers, streak, onAnswer }: PredictionViewProps) {
+export function PredictionView({ questions, answers, streak, teams, onAnswer }: PredictionViewProps) {
   const [submitting, setSubmitting] = useState<string | null>(null);
+  const teamPaletteById = new Map(
+    teams.map((team) => {
+      const palette = getTeamPalette(team);
+      return [team.id, palette] as const;
+    })
+  );
 
   const handleAnswer = async (qid: string, oid: string) => {
     setSubmitting(qid);
@@ -87,6 +95,15 @@ export function PredictionView({ questions, answers, streak, onAnswer }: Predict
                 <div className="space-y-2">
                   {q.options.map(opt => {
                     const selected = answer?.optionId === opt.id;
+                    const teamPalette =
+                      q.category === "winner" ? teamPaletteById.get(opt.value) : undefined;
+                    const optionLabel = teamPalette?.team.name ?? opt.label;
+                    const teamStyle = teamPalette
+                      ? {
+                          borderColor: `${teamPalette.primary}55`,
+                          background: `linear-gradient(135deg, ${teamPalette.primary}16, ${teamPalette.secondary}10)`
+                        }
+                      : undefined;
                     return (
                       <button
                         key={opt.id}
@@ -94,14 +111,27 @@ export function PredictionView({ questions, answers, streak, onAnswer }: Predict
                         disabled={answered || locked || loading}
                         className={`w-full flex items-center justify-between p-3 rounded-xl border text-sm transition-all ${
                           selected
-                            ? "bg-accent text-surface border-accent font-semibold"
+                            ? teamPalette
+                              ? "font-semibold"
+                              : "bg-accent text-surface border-accent font-semibold"
                             : answered || locked
                               ? "bg-surface-elevated border-border opacity-60 cursor-not-allowed"
                               : "bg-surface-elevated border-border hover:border-accent/50"
                         }`}
+                        style={teamStyle ? teamStyle : undefined}
                       >
-                        {opt.label}
-                        {selected && <CheckCircle className="w-4 h-4" />}
+                        <span
+                          className="font-medium"
+                          style={selected && teamPalette ? { color: teamPalette.primary } : undefined}
+                        >
+                          {optionLabel}
+                        </span>
+                        {selected && (
+                          <CheckCircle
+                            className="w-4 h-4"
+                            style={teamPalette ? { color: teamPalette.primary } : undefined}
+                          />
+                        )}
                       </button>
                     );
                   })}

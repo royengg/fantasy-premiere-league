@@ -1,4 +1,4 @@
-import { defaultRosterRules } from "@fantasy-cricket/domain";
+import { defaultRosterRules, normalizeIplTeam } from "@fantasy-cricket/domain";
 import type {
   Contest,
   CricketDataMatch,
@@ -21,8 +21,10 @@ const PLAYER_PREFIX = `${PROVIDER_PREFIX}:player:`;
 const QUESTION_PREFIX = `${PROVIDER_PREFIX}:question:`;
 const SCORE_EVENT_PREFIX = `${PROVIDER_PREFIX}:score:`;
 const TEAM_PREFIX = `${PROVIDER_PREFIX}:team:`;
-const SYNC_WINDOW_DAYS = 14;
+const FIXTURE_SYNC_WINDOW_DAYS = 30;
+const SQUAD_LOOKAHEAD_HOURS = 72;
 const RECENT_COMPLETED_DAYS = 2;
+const RECENT_SCORECARD_LOOKBACK_HOURS = 48;
 const DEFAULT_SALARY_CAP = 100;
 
 export interface ProviderSyncGateway {
@@ -110,7 +112,7 @@ function shouldIncludeMatch(match: CricketDataMatch, now = Date.now()) {
   }
 
   if (match.status === "upcoming") {
-    return startsAt <= now + SYNC_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+    return startsAt <= now + FIXTURE_SYNC_WINDOW_DAYS * 24 * 60 * 60 * 1000;
   }
 
   if (match.status === "completed") {
@@ -120,10 +122,61 @@ function shouldIncludeMatch(match: CricketDataMatch, now = Date.now()) {
   return false;
 }
 
+function shouldFetchSquads(match: CricketDataMatch, now = Date.now()) {
+  const startsAt = new Date(match.start_time).getTime();
+  if (!Number.isFinite(startsAt)) {
+    return false;
+  }
+
+  if (match.status === "live") {
+    return true;
+  }
+
+  if (match.status === "upcoming") {
+    return startsAt <= now + SQUAD_LOOKAHEAD_HOURS * 60 * 60 * 1000;
+  }
+
+  if (match.status === "completed") {
+    return startsAt >= now - RECENT_COMPLETED_DAYS * 24 * 60 * 60 * 1000;
+  }
+
+  return false;
+}
+
+function shouldFetchScorecard(match: CricketDataMatch, now = Date.now()) {
+  const startsAt = new Date(match.start_time).getTime();
+  if (!Number.isFinite(startsAt)) {
+    return false;
+  }
+
+  if (match.status === "live") {
+    return true;
+  }
+
+  if (match.status === "completed") {
+    return startsAt >= now - RECENT_SCORECARD_LOOKBACK_HOURS * 60 * 60 * 1000;
+  }
+
+  return false;
+}
+
 function createContest(match: Match, source: CricketDataMatch): Contest {
+  const homeTeam = normalizeIplTeam({
+    id: providerId(TEAM_PREFIX, source.home_team.id),
+    name: source.home_team.name,
+    shortName: source.home_team.short_name,
+    city: source.city || source.home_team.name
+  });
+  const awayTeam = normalizeIplTeam({
+    id: providerId(TEAM_PREFIX, source.away_team.id),
+    name: source.away_team.name,
+    shortName: source.away_team.short_name,
+    city: source.city || source.away_team.name
+  });
+
   return {
     id: providerId(CONTEST_PREFIX, source.id),
-    name: source.short_name || `${source.home_team.short_name} vs ${source.away_team.short_name}`,
+    name: `${homeTeam.name} vs ${awayTeam.name}`,
     kind: "public",
     matchId: match.id,
     salaryCap: DEFAULT_SALARY_CAP,
@@ -142,21 +195,34 @@ function createWinnerQuestion(match: Match, source: CricketDataMatch): Predictio
   const resolvesAt =
     source.end_time ??
     new Date(new Date(source.start_time).getTime() + 4 * 60 * 60 * 1000).toISOString();
+  const homeTeam = normalizeIplTeam({
+    id: providerId(TEAM_PREFIX, source.home_team.id),
+    name: source.home_team.name,
+    shortName: source.home_team.short_name,
+    city: source.city || source.home_team.name
+  });
+  const awayTeam = normalizeIplTeam({
+    id: providerId(TEAM_PREFIX, source.away_team.id),
+    name: source.away_team.name,
+    shortName: source.away_team.short_name,
+    city: source.city || source.away_team.name
+  });
+  const matchupName = `${homeTeam.name} vs ${awayTeam.name}`;
 
   return {
     id: providerId(QUESTION_PREFIX, `${source.id}:winner`),
     matchId: match.id,
-    prompt: `Who wins ${source.short_name || source.name}?`,
+    prompt: `Who wins ${matchupName}?`,
     category: "winner",
     options: [
       {
         id: providerId(QUESTION_PREFIX, `${source.id}:winner:${source.home_team.id}`),
-        label: source.home_team.name,
+        label: homeTeam.name,
         value: providerId(TEAM_PREFIX, source.home_team.id)
       },
       {
         id: providerId(QUESTION_PREFIX, `${source.id}:winner:${source.away_team.id}`),
-        label: source.away_team.name,
+        label: awayTeam.name,
         value: providerId(TEAM_PREFIX, source.away_team.id)
       }
     ],
@@ -238,19 +304,23 @@ export async function buildProviderSyncSnapshot(
   gateway: ProviderSyncGateway = cricketDataService,
   season = new Date().getFullYear()
 ): Promise<ProviderSyncSnapshot> {
+  const now = Date.now();
   const providerMatches = (await gateway.getIPLMatches(season))
-    .filter((match) => shouldIncludeMatch(match))
+    .filter((match) => shouldIncludeMatch(match, now))
     .sort(
       (left, right) =>
         new Date(left.start_time).getTime() - new Date(right.start_time).getTime()
     );
 
-  const squadResponses = await Promise.all(
-    providerMatches.map(async (match) => ({
-      matchId: match.id,
-      squads: await gateway.getMatchSquad(match.id).catch(() => [] as CricketDataSquad[])
-    }))
-  );
+  const squadMap = new Map<string, CricketDataSquad[]>();
+  for (const match of providerMatches) {
+    if (!shouldFetchSquads(match, now)) {
+      continue;
+    }
+
+    const squads = await gateway.getMatchSquad(match.id).catch(() => [] as CricketDataSquad[]);
+    squadMap.set(match.id, squads);
+  }
 
   const teamMap = new Map<string, Team>();
   const playerMap = new Map<string, Player>();
@@ -262,19 +332,21 @@ export async function buildProviderSyncSnapshot(
   for (const sourceMatch of providerMatches) {
     const homeTeamId = providerId(TEAM_PREFIX, sourceMatch.home_team.id);
     const awayTeamId = providerId(TEAM_PREFIX, sourceMatch.away_team.id);
-
-    teamMap.set(homeTeamId, {
+    const homeTeam = normalizeIplTeam({
       id: homeTeamId,
       name: sourceMatch.home_team.name,
       shortName: sourceMatch.home_team.short_name,
       city: sourceMatch.city || sourceMatch.home_team.name
     });
-    teamMap.set(awayTeamId, {
+    const awayTeam = normalizeIplTeam({
       id: awayTeamId,
       name: sourceMatch.away_team.name,
       shortName: sourceMatch.away_team.short_name,
       city: sourceMatch.city || sourceMatch.away_team.name
     });
+
+    teamMap.set(homeTeamId, homeTeam);
+    teamMap.set(awayTeamId, awayTeam);
 
     const match: Match = {
       id: providerId(MATCH_PREFIX, sourceMatch.id),
@@ -287,17 +359,17 @@ export async function buildProviderSyncSnapshot(
 
     matches.push(match);
 
-    const squads = squadResponses.find((entry) => entry.matchId === sourceMatch.id)?.squads ?? [];
+    const squads = squadMap.get(sourceMatch.id) ?? [];
     for (const squad of squads) {
       const teamId = providerId(TEAM_PREFIX, squad.team_id);
       const existingTeam = teamMap.get(teamId);
       if (!existingTeam) {
-        teamMap.set(teamId, {
+        teamMap.set(teamId, normalizeIplTeam({
           id: teamId,
           name: squad.team_name,
           shortName: squad.team_name.slice(0, 3).toUpperCase(),
           city: squad.team_name
-        });
+        }));
       }
 
       for (const sourcePlayer of squad.players) {
@@ -321,10 +393,11 @@ export async function buildProviderSyncSnapshot(
 
     if (matchPlayers.length > 0) {
       contests.push(createContest(match, sourceMatch));
-      questions.push(createWinnerQuestion(match, sourceMatch));
     }
 
-    if (match.state === "scheduled") {
+    questions.push(createWinnerQuestion(match, sourceMatch));
+
+    if (!shouldFetchScorecard(sourceMatch, now)) {
       continue;
     }
 

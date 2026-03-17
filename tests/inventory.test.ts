@@ -13,7 +13,7 @@ const item: CosmeticItem = {
   gameplayAffecting: false,
   transferable: false,
   redeemable: false,
-  resaleValue: false
+  resaleValue: 0
 };
 
 describe("inventory rules", () => {
@@ -44,6 +44,7 @@ describe("inventory rules", () => {
     const profile: Profile = {
       userId: "user-1",
       username: "player",
+      credits: 100,
       xp: 10,
       level: 1,
       streak: 0,
@@ -66,6 +67,7 @@ describe("inventory rules", () => {
     const profile: Profile = {
       userId: "user-1",
       username: "player",
+      credits: 100,
       xp: 10,
       level: 1,
       streak: 0,
