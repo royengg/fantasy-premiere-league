@@ -1,13 +1,21 @@
 import type {
+  AuctionCatalogPlayer,
+  AuctionRoomDetails,
+  AuctionRoomSummary,
   AuthResponse,
+  BootstrapPayload,
   BuildRosterInput,
   CosmeticItem,
-  DashboardPayload,
+  ContestPagePayload,
+  HomePagePayload,
+  InventoryPagePayload,
   League,
   Profile,
   PredictionAnswer,
+  PredictionPagePayload,
   PredictionQuestion,
-  Roster
+  Roster,
+  TeamWithPlayers
 } from "@fantasy-cricket/types";
 
 export interface ApiClientOptions {
@@ -78,22 +86,89 @@ export function createApiClient({ baseUrl, getSessionToken }: ApiClientOptions) 
         method: "PATCH",
         body: JSON.stringify(payload)
       }, getSessionToken),
-    getDashboard: () => request<DashboardPayload>(baseUrl, "/api/bootstrap", { method: "GET" }, getSessionToken),
-    createLeague: (payload: { name: string; description?: string; visibility: "public" | "private" }) =>
+    getBootstrap: () => request<BootstrapPayload>(baseUrl, "/api/bootstrap", { method: "GET" }, getSessionToken),
+    getHome: () => request<HomePagePayload>(baseUrl, "/api/home", { method: "GET" }, getSessionToken),
+    getContestsPage: () => request<ContestPagePayload>(baseUrl, "/api/contests", { method: "GET" }, getSessionToken),
+    getLeagues: () => request<League[]>(baseUrl, "/api/leagues", { method: "GET" }, getSessionToken),
+    getPredictionsPage: () => request<PredictionPagePayload>(baseUrl, "/api/predictions", { method: "GET" }, getSessionToken),
+    getInventoryPage: () => request<InventoryPagePayload>(baseUrl, "/api/inventory", { method: "GET" }, getSessionToken),
+    getTeamsWithPlayers: () => request<TeamWithPlayers[]>(baseUrl, "/api/teams", { method: "GET" }, getSessionToken),
+    createLeague: (payload: {
+      name: string;
+      description?: string;
+      visibility: "public" | "private";
+      maxMembers: number;
+    }) =>
       request<League>(baseUrl, "/api/leagues", { method: "POST", body: JSON.stringify(payload) }, getSessionToken),
     joinLeague: (inviteCode: string) =>
       request<League>(baseUrl, "/api/leagues/join", { method: "POST", body: JSON.stringify({ inviteCode }) }, getSessionToken),
+    deleteLeague: (leagueId: string) =>
+      request<{ leagueId: string }>(baseUrl, `/api/leagues/${leagueId}`, { method: "DELETE" }, getSessionToken),
+    getAuctionRooms: () =>
+      request<AuctionRoomSummary[]>(baseUrl, "/api/auctions", { method: "GET" }, getSessionToken),
+    getAuctionCatalogPlayers: () =>
+      request<AuctionCatalogPlayer[]>(baseUrl, "/api/auctions/catalog/players", { method: "GET" }, getSessionToken),
+    getAuctionRoom: (roomId: string) =>
+      request<AuctionRoomDetails>(baseUrl, `/api/auctions/${roomId}`, { method: "GET" }, getSessionToken),
+    createAuctionRoom: (payload: {
+      leagueId?: string;
+      name: string;
+      visibility: "public" | "private";
+      maxParticipants: number;
+      squadSize: number;
+      bidWindowSeconds: number;
+      bidExtensionSeconds: number;
+      playerPoolMode: "all" | "custom";
+      playerPoolPlayerIds?: string[];
+    }) =>
+      request<AuctionRoomDetails>(baseUrl, "/api/auctions", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      }, getSessionToken),
+    updateAuctionRoomSettings: (roomId: string, payload: {
+      name: string;
+      maxParticipants: number;
+      squadSize: number;
+      bidWindowSeconds: number;
+      bidExtensionSeconds: number;
+      playerPoolMode: "all" | "custom";
+      playerPoolPlayerIds?: string[];
+    }) =>
+      request<AuctionRoomDetails>(baseUrl, `/api/auctions/${roomId}/settings`, {
+        method: "PATCH",
+        body: JSON.stringify(payload)
+      }, getSessionToken),
+    joinAuctionRoom: (payload: { roomId?: string; inviteCode?: string }) =>
+      request<AuctionRoomDetails>(baseUrl, "/api/auctions/join", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      }, getSessionToken),
+    setAuctionReady: (roomId: string, ready: boolean) =>
+      request<AuctionRoomDetails>(baseUrl, `/api/auctions/${roomId}/ready`, {
+        method: "POST",
+        body: JSON.stringify({ ready })
+      }, getSessionToken),
+    startAuctionRoom: (roomId: string) =>
+      request<AuctionRoomDetails>(baseUrl, `/api/auctions/${roomId}/start`, {
+        method: "POST"
+      }, getSessionToken),
+    placeAuctionBid: (roomId: string, amountLakhs: number) =>
+      request<AuctionRoomDetails>(baseUrl, `/api/auctions/${roomId}/bid`, {
+        method: "POST",
+        body: JSON.stringify({ amountLakhs })
+      }, getSessionToken),
+    withdrawAuctionBid: (roomId: string) =>
+      request<AuctionRoomDetails>(baseUrl, `/api/auctions/${roomId}/withdraw`, {
+        method: "POST"
+      }, getSessionToken),
+    skipAuctionLot: (roomId: string) =>
+      request<AuctionRoomDetails>(baseUrl, `/api/auctions/${roomId}/skip`, {
+        method: "POST"
+      }, getSessionToken),
     submitRoster: (contestId: string, payload: BuildRosterInput) =>
       request<Roster>(baseUrl, `/api/contests/${contestId}/roster`, { method: "POST", body: JSON.stringify(payload) }, getSessionToken),
     answerPrediction: (questionId: string, optionId: string) =>
       request<PredictionAnswer>(baseUrl, `/api/predictions/${questionId}/answer`, { method: "POST", body: JSON.stringify({ optionId }) }, getSessionToken),
-    getInventory: () =>
-      request<{ cosmetics: CosmeticItem[]; equipped: DashboardPayload["inventory"]["equipped"] }>(
-        baseUrl,
-        "/api/inventory",
-        { method: "GET" },
-        getSessionToken
-      ),
     equipCosmetic: (cosmeticId: string) =>
       request<{ cosmeticId: string }>(baseUrl, "/api/inventory/equip", { method: "POST", body: JSON.stringify({ cosmeticId }) }, getSessionToken),
     syncProvider: () => request<{ status: string; syncedAt: string }>(baseUrl, "/api/admin/provider-sync", { method: "POST" }, getSessionToken),

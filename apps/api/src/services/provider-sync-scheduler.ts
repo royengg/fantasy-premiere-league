@@ -11,6 +11,7 @@ const DAILY_REFRESH_INTERVAL_MS = 1000 * 60 * 60 * 24;
 const MATCH_DAY_SYNC_LEAD_MS = 1000 * 60 * 60 * 6;
 const PRE_MATCH_REFRESH_INTERVAL_MS = 1000 * 60 * 60 * 6;
 const FAILED_SYNC_RETRY_COOLDOWN_MS = 1000 * 60 * 90;
+const MIN_SYNC_REQUEST_BUDGET = 3;
 
 export class ProviderSyncScheduler {
   private intervalId?: ReturnType<typeof setInterval>;
@@ -85,6 +86,17 @@ export class ProviderSyncScheduler {
     const now = Date.now();
     const lastAttemptedAt = new Date(context.provider.lastAttemptedAt).getTime();
     const lastSyncedAt = new Date(context.provider.syncedAt).getTime();
+
+    if (
+      context.provider.blockedUntil &&
+      new Date(context.provider.blockedUntil).getTime() > now
+    ) {
+      return false;
+    }
+
+    if (context.remainingDailyRequestBudget < MIN_SYNC_REQUEST_BUDGET) {
+      return false;
+    }
 
     if (
       context.provider.status !== "ready" &&

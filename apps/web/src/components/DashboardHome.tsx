@@ -1,42 +1,41 @@
-import { Crown, Flame, Star, Wallet, type LucideIcon } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 
-import type { DashboardPayload } from "@fantasy-cricket/types";
+import type { HomePagePayload } from "@fantasy-cricket/types";
 
+import type { DashboardRoute } from "../lib/dashboard-routes";
 import { LiveMatchCarousel } from "./LiveMatchCarousel";
 import { NavigationCard } from "./NavigationCard";
 
-type Screen = "home" | "contests" | "leagues" | "predictions" | "locker";
-
 interface DashboardHomeProps {
-  dashboard: DashboardPayload;
+  dashboard: HomePagePayload;
   navItems: Array<{
-    id: Screen;
+    id: DashboardRoute;
     title: string;
     subtitle: string;
     icon: LucideIcon;
     stats: { value: number; label: string };
   }>;
-  onNavigate: (screen: Screen) => void;
+  onNavigate: (screen: DashboardRoute) => void;
 }
 
 export function DashboardHome({ dashboard, navItems, onNavigate }: DashboardHomeProps) {
   return (
-    <div className="p-6 lg:p-8">
-      <header className="mb-10">
-        <div className="flex items-center justify-between">
+    <div className="mx-auto max-w-7xl px-4 py-1.5 sm:px-6 sm:py-3 lg:px-8 lg:py-6">
+      <header className="mb-3 sm:mb-5 lg:mb-6">
+        <div className="flex items-start justify-between gap-3 sm:items-center">
           <div>
-            <p className="text-accent text-xs font-bold uppercase tracking-widest mb-2">IPL 2026</p>
-            <h1 className="text-3xl lg:text-4xl font-extrabold tracking-tight mb-2">
+            <p className="text-accent mb-1.5 text-[10px] font-bold uppercase tracking-widest sm:mb-2 sm:text-xs">IPL 2026</p>
+            <h1 className="mb-1 text-lg font-extrabold tracking-tight sm:mb-2 sm:text-3xl lg:text-4xl">
               Hey, {dashboard.profile.username.split(" ")[0]}
             </h1>
-            <p className="text-text-muted">What are you playing today?</p>
+            <p className="text-sm text-text-muted sm:text-base">What are you playing today?</p>
           </div>
-          <div className="hidden sm:flex items-center gap-3">
-            <div className="text-right">
+          <div className="flex items-center gap-2 self-start sm:gap-3 sm:self-auto">
+            <div className="hidden text-right sm:block">
               <p className="text-sm font-semibold">{dashboard.profile.username}</p>
               <p className="text-xs text-text-muted">Level {dashboard.profile.level}</p>
             </div>
-            <div className="w-10 h-10 rounded-full bg-accent/20 border border-accent/30 flex items-center justify-center text-sm font-bold text-accent">
+            <div className="flex h-9 w-9 items-center justify-center rounded-full border border-accent/30 bg-accent/20 text-sm font-bold text-accent sm:h-10 sm:w-10">
               {dashboard.profile.username.charAt(0).toUpperCase()}
             </div>
           </div>
@@ -58,29 +57,6 @@ export function DashboardHome({ dashboard, navItems, onNavigate }: DashboardHome
             onClick={() => onNavigate(item.id)}
           />
         ))}
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <div className="stat-block">
-          <Wallet className="w-5 h-5 text-accent mb-2" />
-          <span className="stat-value">{dashboard.profile.credits.toFixed(1)}</span>
-          <span className="stat-label">Credits</span>
-        </div>
-        <div className="stat-block">
-          <Star className="w-5 h-5 text-accent mb-2" />
-          <span className="stat-value text-accent">{dashboard.profile.xp.toLocaleString()}</span>
-          <span className="stat-label">Total XP</span>
-        </div>
-        <div className="stat-block">
-          <Flame className="w-5 h-5 text-accent mb-2" />
-          <span className="stat-value">{dashboard.profile.streak}</span>
-          <span className="stat-label">Day Streak</span>
-        </div>
-        <div className="stat-block">
-          <Crown className="w-5 h-5 text-accent mb-2" />
-          <span className="stat-value">Lv.{dashboard.profile.level}</span>
-          <span className="stat-label">Level</span>
-        </div>
       </div>
     </div>
   );

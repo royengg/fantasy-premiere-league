@@ -13,6 +13,7 @@ export interface Env {
   CRICKET_DATA_API_KEY: string;
   CRICKET_DATA_BASE_URL: string;
   CRICKET_DATA_CACHE_TTL: number;
+  CRICKET_DATA_DAILY_LIMIT: number;
 }
 
 const envDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -90,6 +91,7 @@ export function loadEnv(): Env {
       "postgresql://USER:PASSWORD@ep-example.us-east-1.aws.neon.tech/fantasy_cricket?sslmode=require&connect_timeout=15",
     CRICKET_DATA_API_KEY: process.env.CRICKET_DATA_API_KEY ?? "",
     CRICKET_DATA_BASE_URL: process.env.CRICKET_DATA_BASE_URL ?? "https://api.cricapi.com/v1",
-    CRICKET_DATA_CACHE_TTL: Number(process.env.CRICKET_DATA_CACHE_TTL ?? 300)
+    CRICKET_DATA_CACHE_TTL: Number(process.env.CRICKET_DATA_CACHE_TTL ?? 300),
+    CRICKET_DATA_DAILY_LIMIT: Number(process.env.CRICKET_DATA_DAILY_LIMIT ?? 80)
   };
 }

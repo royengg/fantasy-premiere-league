@@ -26,7 +26,7 @@ Web-first play-money fantasy cricket for public contests and private friend leag
 2. Create a Neon database and copy `.env.example` to `.env`.
 3. Fill `DATABASE_URL` with Neon’s pooled connection string and `DIRECT_URL` with Neon’s direct connection string.
 4. `CORS_ORIGIN` accepts a comma-separated allowlist. For local Bun/Vite dev, keep both `http://localhost:5173` and `http://localhost:5174` if you switch ports.
-   Set `CRICKET_DATA_API_KEY` if you want provider ingestion and live IPL sync to work. The default provider base URL is `https://api.cricapi.com/v1`.
+   Set `CRICKET_DATA_API_KEY` if you want provider ingestion and live IPL sync to work. The default provider base URL is `https://api.cricapi.com/v1`. The app hard-caps itself with `CRICKET_DATA_DAILY_LIMIT` and defaults to `80` requests/day so it stays under CricAPI’s free-tier daily quota with headroom.
 5. Start local Postgres with `docker compose up -d` only if you want a non-Neon local database.
 6. Generate the Prisma 7 client with `bun run prisma:generate`.
 7. Push the schema with `bun run prisma:push` or create a migration with `bun run prisma:migrate`.
@@ -48,7 +48,8 @@ The frontend stores a session token, not a raw user ID. New users are forced thr
 Provider sync is DB-first:
 - User-facing reads come from Neon-backed app state, not directly from the cricket provider.
 - A background scheduler refreshes provider data before match days and stores normalized teams, players, matches, public contests, and winner questions in the database.
-- `POST /api/admin/provider-sync` still exists as an admin override, but the normal product flow reads only from stored data.
+- The runtime enforces a persisted daily provider-request budget, survives server restarts, and blocks further upstream calls until the next day if the cap is reached.
+- `POST /api/admin/provider-sync` still exists as an admin override, but it uses the same request budget and will return a quota error instead of bypassing the cap.
 
 ## Guardrails
 

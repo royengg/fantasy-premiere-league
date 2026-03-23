@@ -6,6 +6,9 @@ export type TeamRole = "WK" | "BAT" | "AR" | "BOWL";
 export type MatchState = "scheduled" | "live" | "completed";
 export type LeagueVisibility = "public" | "private";
 export type ContestKind = "public" | "private";
+export type AuctionRoomVisibility = "public" | "private";
+export type AuctionRoomState = "waiting" | "live" | "completed" | "cancelled";
+export type AuctionPlayerPoolMode = "all" | "custom";
 export type PredictionCategory = "toss" | "powerplay-runs" | "most-wickets" | "highest-score" | "man-of-match" | "winner" | "player-performance" | "total" | "milestone";
 export type PredictionState = "open" | "locked" | "settled";
 export type BadgeCategory = "streak" | "rank" | "seasonal" | "milestone";
@@ -46,7 +49,6 @@ export interface Profile {
   username: string;
   bio?: string;
   favoriteTeamId?: ID;
-  credits: number;
   xp: number;
   level: number;
   streak: number;
@@ -78,12 +80,15 @@ export interface Team {
   city: string;
 }
 
+export interface TeamWithPlayers extends Team {
+  players: Player[];
+}
+
 export interface Player {
   id: ID;
   name: string;
   teamId: ID;
   role: TeamRole;
-  credits: number;
   rating: number;
   nationality: PlayerNationality;
   selectionPercent: number;
@@ -99,16 +104,12 @@ export interface Match {
 }
 
 export interface RosterRules {
+  startingPlayers: number;
+  substitutePlayers: number;
   totalPlayers: number;
   minByRole: Record<TeamRole, number>;
   maxByRole: Record<TeamRole, number>;
   maxPerTeam: number;
-}
-
-export interface IPLRules {
-  maxPlayersPerTeam: 7;
-  allowImpactPlayer: boolean;
-  uncappedBonusPoints: number;
 }
 
 export interface SeasonReward {
@@ -126,9 +127,7 @@ export interface Contest {
   kind: ContestKind;
   matchId: ID;
   leagueId?: ID;
-  salaryCap: number;
   rosterRules: RosterRules;
-  iplRules: IPLRules;
   lockTime: string;
   rewards: SeasonReward[];
 }
@@ -143,10 +142,155 @@ export interface League {
   memberIds: ID[];
   contestIds: ID[];
   bannerStyle: string;
+  mode: "season";
+  maxMembers: number;
+  squadSize: number;
+  auctionRoomId?: ID;
+}
+
+export interface AuctionRoomSettings {
+  leagueId?: ID;
+  maxParticipants: number;
+  squadSize: number;
+  purseLakhs: number;
+  basePriceLakhs: number;
+  bidWindowSeconds: number;
+  bidExtensionSeconds: number;
+  maxOverseas: number;
+  playerPoolMode: AuctionPlayerPoolMode;
+}
+
+export interface AuctionCatalogPlayer {
+  playerId: ID;
+  name: string;
+  teamId: ID;
+  teamName: string;
+  teamShortName: string;
+  role: TeamRole;
+  nationality: PlayerNationality;
+  rating: number;
+}
+
+export interface AuctionParticipant {
+  userId: ID;
+  displayName: string;
+  isHost: boolean;
+  ready: boolean;
+  purseRemainingLakhs: number;
+  slotsRemaining: number;
+  overseasCount: number;
+  joinedAt: string;
+}
+
+export interface AuctionRoomSummary {
+  id: ID;
+  leagueId?: ID;
+  leagueName?: string;
+  name: string;
+  visibility: AuctionRoomVisibility;
+  state: AuctionRoomState;
+  hostUserId: ID;
+  hostDisplayName: string;
+  inviteCode?: string;
+  participantCount: number;
+  maxParticipants: number;
+  squadSize: number;
+  bidWindowSeconds: number;
+  playerPoolMode: AuctionPlayerPoolMode;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface AuctionLot {
+  poolEntryId: ID;
+  playerId: ID;
+  playerName: string;
+  teamId: ID;
+  teamName: string;
+  teamShortName: string;
+  role: TeamRole;
+  nationality: PlayerNationality;
+  nominationOrder: number;
+  openingBidLakhs: number;
+  currentBidLakhs?: number;
+  currentLeaderUserId?: ID;
+  currentLeaderDisplayName?: string;
+  lotEndsAt?: string;
+  state: "pending" | "active" | "sold" | "unsold";
+  soldPriceLakhs?: number;
+  soldToUserId?: ID;
+  soldToDisplayName?: string;
+}
+
+export interface AuctionBidEntry {
+  id: ID;
+  roomId: ID;
+  poolEntryId: ID;
+  userId: ID;
+  displayName: string;
+  amountLakhs: number;
+  createdAt: string;
+}
+
+export interface AuctionRosterEntry {
+  playerId: ID;
+  playerName: string;
+  teamId: ID;
+  teamName: string;
+  teamShortName: string;
+  role: TeamRole;
+  nationality: PlayerNationality;
+  priceLakhs: number;
+}
+
+export interface AuctionRoster {
+  userId: ID;
+  displayName: string;
+  players: AuctionRosterEntry[];
+  totalSpentLakhs: number;
+  purseRemainingLakhs: number;
+  slotsRemaining: number;
+}
+
+export interface AuctionEventLogEntry {
+  id: ID;
+  type:
+    | "room-created"
+    | "participant-joined"
+    | "participant-ready"
+    | "settings-updated"
+    | "auction-started"
+    | "player-nominated"
+    | "bid-placed"
+    | "participant-withdrew"
+    | "skip-voted"
+    | "player-sold"
+    | "player-unsold"
+    | "auction-completed";
+  actorUserId?: ID;
+  message: string;
+  createdAt: string;
+}
+
+export interface AuctionRoomDetails {
+  room: AuctionRoomSummary;
+  settings: AuctionRoomSettings;
+  participants: AuctionParticipant[];
+  currentLot?: AuctionLot;
+  recentBids: AuctionBidEntry[];
+  rosters: AuctionRoster[];
+  selectedPlayerIds: ID[];
+  pendingPlayerCount: number;
+  totalPoolCount: number;
+  skipVoteUserIds: ID[];
+  withdrawnUserIds: ID[];
+  eventLog: AuctionEventLogEntry[];
 }
 
 export interface RosterPlayerSelection {
   playerId: ID;
+  isStarter: boolean;
 }
 
 export interface Roster {
@@ -156,11 +300,33 @@ export interface Roster {
   players: RosterPlayerSelection[];
   captainPlayerId: ID;
   viceCaptainPlayerId: ID;
-  impactPlayerId?: ID;
-  totalCredits: number;
   submittedAt: string;
   locked: boolean;
-  hasUncappedPlayer: boolean;
+}
+
+export interface PlayerMatchStatLine {
+  id: ID;
+  matchId: ID;
+  playerId: ID;
+  runs: number;
+  balls: number;
+  fours: number;
+  sixes: number;
+  wickets: number;
+  maidens: number;
+  dotBalls: number;
+  catches: number;
+  stumpings: number;
+  runOuts: number;
+  runsConceded: number;
+  ballsBowled: number;
+  battingStrikeRate?: number;
+  bowlingEconomy?: number;
+  didPlay: boolean;
+  didBat: boolean;
+  didBowl: boolean;
+  didField: boolean;
+  sourceUpdatedAt: string;
 }
 
 export interface FantasyScoreEvent {
@@ -178,6 +344,12 @@ export interface PlayerPointsBreakdown {
   basePoints: number;
   multiplier: number;
   finalPoints: number;
+  role?: TeamRole;
+  isStarter?: boolean;
+  didPlay?: boolean;
+  replacedPlayerId?: ID;
+  replacedPlayerName?: string;
+  autoSubstituted?: boolean;
 }
 
 export interface LeaderboardEntry {
@@ -277,6 +449,31 @@ export interface Badge {
   seasonId?: ID;
 }
 
+export interface BootstrapPayload {
+  user: User;
+  profile: Profile;
+  teams: Team[];
+}
+
+export interface HomePagePayload {
+  user: User;
+  profile: Profile;
+  contests: Contest[];
+  matches: Match[];
+  teams: Team[];
+  leagueCount: number;
+  lockerItemCount: number;
+}
+
+export interface ContestPagePayload {
+  contests: Contest[];
+  matches: Match[];
+  teams: Team[];
+  players: Player[];
+  rosters: Roster[];
+  leaderboard: LeaderboardEntry[];
+}
+
 export interface DashboardPayload {
   user: User;
   profile: Profile;
@@ -300,18 +497,31 @@ export interface PredictionFeedPayload {
   results: PredictionResult[];
 }
 
+export interface PredictionPagePayload {
+  profile: Profile;
+  teams: Team[];
+  questions: PredictionQuestion[];
+  answers: PredictionAnswer[];
+  results: PredictionResult[];
+}
+
+export interface InventoryPagePayload {
+  profile: Profile;
+  inventory: UserInventory;
+  cosmetics: CosmeticItem[];
+  badges: Badge[];
+}
+
 export interface RosterValidationResult {
   valid: boolean;
-  totalCredits: number;
   errors: string[];
   warnings: string[];
   teamCount: Record<ID, number>;
-  hasUncappedPlayer: boolean;
 }
 
 export interface BuildRosterInput {
-  playerIds: ID[];
+  starterPlayerIds: ID[];
+  substitutePlayerIds: ID[];
   captainPlayerId: ID;
   viceCaptainPlayerId: ID;
-  impactPlayerId?: ID;
 }

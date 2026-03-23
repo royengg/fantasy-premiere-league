@@ -11,6 +11,7 @@ import type {
   League,
   Match,
   Player,
+  PlayerMatchStatLine,
   PredictionAnswer,
   PredictionQuestion,
   PredictionResult,
@@ -32,6 +33,9 @@ export interface ProviderSyncState {
   status: "idle" | "syncing" | "ready";
   syncedAt: string;
   lastAttemptedAt: string;
+  requestDayKey: string;
+  dailyRequestCount: number;
+  blockedUntil?: string;
 }
 
 export interface AppStore {
@@ -47,6 +51,7 @@ export interface AppStore {
   contests: Contest[];
   leagues: League[];
   rosters: Roster[];
+  playerMatchStatLines: PlayerMatchStatLine[];
   scoreEvents: FantasyScoreEvent[];
   leaderboard: LeaderboardEntry[];
   questions: PredictionQuestion[];

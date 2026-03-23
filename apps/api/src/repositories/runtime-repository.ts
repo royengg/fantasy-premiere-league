@@ -1,15 +1,21 @@
 import type {
   BuildRosterInput,
   AuthResponse,
+  BootstrapPayload,
   Contest,
+  ContestPagePayload,
   CosmeticItem,
   DashboardPayload,
+  HomePagePayload,
+  InventoryPagePayload,
   LeaderboardEntry,
   League,
   PredictionAnswer,
   PredictionFeedPayload,
+  PredictionPagePayload,
   Profile,
   Roster,
+  TeamWithPlayers,
   User,
   UserInventory
 } from "@fantasy-cricket/types";
@@ -20,8 +26,16 @@ import type {
   SubmitRosterInput
 } from "@fantasy-cricket/validators";
 
-import type { AppStore } from "../data/store.js";
 import type { ProviderSyncSnapshot } from "../services/provider-sync-service.js";
+
+export interface ProviderStateSnapshot {
+  status: "idle" | "syncing" | "ready";
+  syncedAt: string;
+  lastAttemptedAt: string;
+  requestDayKey: string;
+  dailyRequestCount: number;
+  blockedUntil?: string;
+}
 
 export interface AuthRuntimeRepository {
   listProfileUsernamesByBase(baseUsername: string): Promise<string[]>;
@@ -56,12 +70,20 @@ export interface AuthRuntimeRepository {
 }
 
 export interface ProviderSyncContext {
-  provider: AppStore["provider"];
+  provider: ProviderStateSnapshot;
   hasProviderFeed: boolean;
   nextUpcomingProviderMatchStartsAt: string | null;
+  remainingDailyRequestBudget: number;
+  dailyRequestLimit: number;
 }
 
 export interface GameRuntimeRepository {
+  getBootstrapPayload(userId: string): Promise<BootstrapPayload>;
+  getHomePagePayload(userId: string): Promise<HomePagePayload>;
+  getTeamsWithPlayers(): Promise<TeamWithPlayers[]>;
+  getContestPagePayload(userId: string): Promise<ContestPagePayload>;
+  getPredictionPagePayload(userId: string): Promise<PredictionPagePayload>;
+  getInventoryPagePayload(userId: string): Promise<InventoryPagePayload>;
   getDashboardPayload(userId: string): Promise<DashboardPayload>;
   getVisibleContestsForUser(userId: string): Promise<Contest[]>;
   getVisibleLeaguesForUser(userId: string): Promise<League[]>;
@@ -72,10 +94,17 @@ export interface GameRuntimeRepository {
   getMatchSubscriberIds(matchId: string): Promise<string[]>;
   getLeagueMemberIds(leagueId: string): Promise<string[]>;
   getAllUserIds(): Promise<string[]>;
-  getProviderStatus(): Promise<AppStore["provider"]>;
+  getProviderStatus(): Promise<ProviderStateSnapshot>;
   getProviderSyncContext(): Promise<ProviderSyncContext>;
+  reserveProviderApiRequest(limit: number, dayKey: string, blockedUntil: string): Promise<{
+    used: number;
+    remaining: number;
+  }>;
+  releaseProviderApiRequest(dayKey: string): Promise<void>;
+  blockProviderApiUntil(blockedUntil: string, dayKey: string): Promise<void>;
   createLeagueRecord(userId: string, input: CreateLeagueInput): Promise<League>;
   joinLeagueByInvite(userId: string, input: JoinLeagueInput): Promise<League>;
+  deleteLeagueRecord(userId: string, leagueId: string): Promise<{ leagueId: string }>;
   submitRosterRecord(
     userId: string,
     contestId: string,
@@ -99,5 +128,5 @@ export interface GameRuntimeRepository {
   ): Promise<{ status: string }>;
   rebuildAllLeaderboards(): Promise<void>;
   applyProviderSnapshot(snapshot: ProviderSyncSnapshot): Promise<void>;
-  updateProviderState(patch: Partial<AppStore["provider"]>): Promise<void>;
+  updateProviderState(patch: Partial<ProviderStateSnapshot>): Promise<void>;
 }

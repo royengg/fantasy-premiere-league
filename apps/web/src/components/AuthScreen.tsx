@@ -42,7 +42,7 @@ export function AuthScreen({ onLogin, onRegister, notice }: AuthScreenProps) {
 
   return (
     <div className="min-h-screen bg-surface bg-grid bg-radial flex items-center justify-center p-4">
-      <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+      <div className="grid w-full max-w-5xl grid-cols-1 items-center gap-8 lg:grid-cols-2 lg:gap-12">
         <div className="text-center lg:text-left">
           <div className="inline-flex items-center gap-3 mb-6">
             <div className="w-14 h-14 rounded-xl bg-accent flex items-center justify-center">
@@ -51,16 +51,16 @@ export function AuthScreen({ onLogin, onRegister, notice }: AuthScreenProps) {
             <span className="text-2xl font-black">Fantasy Premier League</span>
           </div>
 
-          <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight mb-4 leading-tight">
+          <h1 className="mb-4 text-3xl font-extrabold leading-tight tracking-tight sm:text-4xl md:text-5xl">
             IPL Fantasy.<br />
             <span className="text-accent">Play for Glory.</span>
           </h1>
 
-          <p className="text-text-muted text-lg mb-8 max-w-md mx-auto lg:mx-0">
+          <p className="mx-auto mb-8 max-w-md text-base text-text-muted sm:text-lg lg:mx-0">
             Build your dream XI, compete with friends, and unlock exclusive cosmetics. Play-money only.
           </p>
 
-          <div className="grid grid-cols-3 gap-4 max-w-sm mx-auto lg:mx-0">
+          <div className="mx-auto grid max-w-sm grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4 lg:mx-0">
             <div className="stat-block text-center">
               <Users className="w-5 h-5 text-accent mx-auto mb-2" />
               <span className="stat-value">10K+</span>
@@ -80,7 +80,7 @@ export function AuthScreen({ onLogin, onRegister, notice }: AuthScreenProps) {
         </div>
 
         <div
-          className="card p-8 max-w-md mx-auto w-full"
+          className="card mx-auto w-full max-w-md p-5 sm:p-8"
           style={{
             backgroundImage:
               "url(\"data:image/svg+xml,%3Csvg width='40' height='40' viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M20 0L40 20L20 40L0 20z' fill='%2322c55e' fill-opacity='0.02'/%3E%3C/svg%3E\")"

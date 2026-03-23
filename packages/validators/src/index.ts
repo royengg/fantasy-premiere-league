@@ -23,7 +23,89 @@ export const authOnboardingSchema = z.object({
 export const createLeagueSchema = z.object({
   name: z.string().trim().min(3).max(60),
   description: z.string().trim().max(200).optional(),
-  visibility: z.enum(["public", "private"])
+  visibility: z.enum(["public", "private"]),
+  maxMembers: z.number().int().min(2).max(15)
+});
+
+const auctionCustomPoolPlayerIdsSchema = z.array(z.string().min(1)).max(500).optional();
+
+const auctionRoomSchemaFields = {
+  leagueId: z.string().trim().min(1).optional(),
+  name: z.string().trim().min(3).max(60),
+  visibility: z.enum(["public", "private"]),
+  maxParticipants: z.number().int().min(2).max(15),
+  squadSize: z.number().int().min(2).max(20),
+  bidWindowSeconds: z.number().int().min(8).max(60),
+  bidExtensionSeconds: z.number().int().min(2).max(15).default(5),
+  playerPoolMode: z.enum(["all", "custom"]),
+  playerPoolPlayerIds: auctionCustomPoolPlayerIdsSchema
+} satisfies z.ZodRawShape;
+
+const baseAuctionRoomSchema = z.object(auctionRoomSchemaFields);
+
+export const createAuctionRoomSchema = baseAuctionRoomSchema
+  .superRefine((value, ctx) => {
+    if (value.playerPoolMode === "custom") {
+      const uniqueCount = new Set(value.playerPoolPlayerIds ?? []).size;
+      if (!value.playerPoolPlayerIds?.length) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Select at least one player for a custom auction pool.",
+          path: ["playerPoolPlayerIds"]
+        });
+      } else if (uniqueCount !== value.playerPoolPlayerIds.length) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Custom player pool cannot include duplicate players.",
+          path: ["playerPoolPlayerIds"]
+        });
+      }
+    }
+  });
+
+export const updateAuctionRoomSettingsSchema = z.object(auctionRoomSchemaFields).omit({
+  visibility: true,
+  leagueId: true
+}).superRefine((value, ctx) => {
+  if (value.playerPoolMode === "custom") {
+    const uniqueCount = new Set(value.playerPoolPlayerIds ?? []).size;
+    if (!value.playerPoolPlayerIds?.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Select at least one player for a custom auction pool.",
+        path: ["playerPoolPlayerIds"]
+      });
+    } else if (uniqueCount !== value.playerPoolPlayerIds.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Custom player pool cannot include duplicate players.",
+        path: ["playerPoolPlayerIds"]
+      });
+    }
+  }
+});
+
+export const joinAuctionRoomSchema = z
+  .object({
+    roomId: z.string().min(1).optional(),
+    inviteCode: z.string().trim().min(4).max(32).optional()
+  })
+  .superRefine((value, ctx) => {
+    if (!value.roomId && !value.inviteCode) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Room ID or invite code is required.",
+        path: ["roomId"]
+      });
+    }
+  });
+
+export const auctionReadySchema = z.object({
+  ready: z.boolean()
+});
+
+export const auctionBidSchema = z.object({
+  amountLakhs: z.number().int().min(25).max(10_000)
 });
 
 export const joinLeagueSchema = z.object({
@@ -32,31 +114,34 @@ export const joinLeagueSchema = z.object({
 
 export const submitRosterSchema = z
   .object({
-    playerIds: z.array(z.string()).length(11),
+    starterPlayerIds: z.array(z.string()).length(11),
+    substitutePlayerIds: z.array(z.string()).length(2),
     captainPlayerId: z.string(),
     viceCaptainPlayerId: z.string()
   })
   .superRefine((value, ctx) => {
-    if (new Set(value.playerIds).size !== value.playerIds.length) {
+    const combined = [...value.starterPlayerIds, ...value.substitutePlayerIds];
+
+    if (new Set(combined).size !== combined.length) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Players can only be selected once.",
-        path: ["playerIds"]
+        path: ["starterPlayerIds"]
       });
     }
 
-    if (!value.playerIds.includes(value.captainPlayerId)) {
+    if (!value.starterPlayerIds.includes(value.captainPlayerId)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Captain must be in the roster.",
+        message: "Captain must be in the starting XI.",
         path: ["captainPlayerId"]
       });
     }
 
-    if (!value.playerIds.includes(value.viceCaptainPlayerId)) {
+    if (!value.starterPlayerIds.includes(value.viceCaptainPlayerId)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Vice captain must be in the roster.",
+        message: "Vice captain must be in the starting XI.",
         path: ["viceCaptainPlayerId"]
       });
     }
@@ -92,6 +177,11 @@ export type AuthRegisterInput = z.infer<typeof authRegisterSchema>;
 export type AuthLoginInput = z.infer<typeof authLoginSchema>;
 export type AuthOnboardingInput = z.infer<typeof authOnboardingSchema>;
 export type CreateLeagueInput = z.infer<typeof createLeagueSchema>;
+export type CreateAuctionRoomInput = z.infer<typeof createAuctionRoomSchema>;
+export type UpdateAuctionRoomSettingsInput = z.infer<typeof updateAuctionRoomSettingsSchema>;
+export type JoinAuctionRoomInput = z.infer<typeof joinAuctionRoomSchema>;
+export type AuctionReadyInput = z.infer<typeof auctionReadySchema>;
+export type AuctionBidInput = z.infer<typeof auctionBidSchema>;
 export type JoinLeagueInput = z.infer<typeof joinLeagueSchema>;
 export type SubmitRosterInput = z.infer<typeof submitRosterSchema>;
 export type PredictionAnswerInput = z.infer<typeof predictionAnswerSchema>;

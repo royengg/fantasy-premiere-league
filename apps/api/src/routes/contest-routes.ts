@@ -17,7 +17,7 @@ export function createContestRouter({ authService, gameService, realtime }: ApiD
     }
 
     try {
-      res.json(await gameService.getContests(userId));
+      res.json(await gameService.getContestsPage(userId));
     } catch (error) {
       sendError(res, 404, error, "Could not load contests.");
     }

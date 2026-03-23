@@ -11,24 +11,31 @@ import { calculateRosterPoints, canSubmitPrediction, settlePredictionAnswer } fr
 import type {
   BuildRosterInput,
   Badge,
+  BootstrapPayload,
   Contest,
+  ContestPagePayload,
   CosmeticItem,
   CosmeticUnlock,
   DashboardPayload,
   FantasyScoreEvent,
   Friendship,
+  HomePagePayload,
+  InventoryPagePayload,
   Invite,
   LeaderboardEntry,
   League,
   Match,
   Player,
+  PlayerMatchStatLine,
   PredictionAnswer,
   PredictionFeedPayload,
+  PredictionPagePayload,
   PredictionQuestion,
   PredictionResult,
   Profile,
   Roster,
   Team,
+  TeamWithPlayers,
   User,
   UserInventory,
   XPTransaction
@@ -41,6 +48,7 @@ import type {
 } from "@fantasy-cricket/validators";
 
 import type { AppStore } from "../data/store.js";
+import { loadEnv } from "../lib/env.js";
 import { prisma } from "../lib/prisma.js";
 import { Prisma, type PrismaClient } from "../generated/prisma/client";
 import type {
@@ -50,19 +58,22 @@ import type {
 } from "../generated/prisma/models/ProviderState";
 import type {
   AuthRuntimeRepository,
-  GameRuntimeRepository
+  GameRuntimeRepository,
+  ProviderStateSnapshot
 } from "./runtime-repository.js";
 import type { ProviderSyncSnapshot } from "../services/provider-sync-service.js";
 
 const SNAPSHOT_TRANSACTION_OPTIONS = {
-  maxWait: 10_000,
-  timeout: 30_000
+  maxWait: 15_000,
+  timeout: 180_000
 } as const;
 const DASHBOARD_PUBLIC_CONTEST_LIMIT = 8;
 const DASHBOARD_PRIVATE_CONTEST_LIMIT = 8;
 const DASHBOARD_LEAGUE_LIMIT = 20;
 const DASHBOARD_PREDICTION_LIMIT = 12;
 const DASHBOARD_LEADERBOARD_LIMIT = 25;
+const DEFAULT_LEAGUE_SQUAD_SIZE = 13;
+const env = loadEnv();
 
 function asJson<T>(value: Prisma.JsonValue | null): T {
   return (value ?? null) as T;
@@ -84,6 +95,15 @@ function toDateString(value: Date | null): string | undefined {
   return value?.toISOString();
 }
 
+function providerBudgetDayKey(now = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(now);
+}
+
 function mapUsers(rows: Array<{ id: string; email: string; name: string; isAdmin: boolean; createdAt: Date }>): User[] {
   return rows.map((row) => ({
     id: row.id,
@@ -94,13 +114,12 @@ function mapUsers(rows: Array<{ id: string; email: string; name: string; isAdmin
   }));
 }
 
-function mapProfiles(rows: Array<{ userId: string; username: string; bio: string | null; favoriteTeamId: string | null; credits: number; xp: number; level: number; streak: number; onboardingCompleted: boolean; equippedCosmetics: Prisma.JsonValue }>): Profile[] {
+function mapProfiles(rows: Array<{ userId: string; username: string; bio: string | null; favoriteTeamId: string | null; xp: number; level: number; streak: number; onboardingCompleted: boolean; equippedCosmetics: Prisma.JsonValue }>): Profile[] {
   return rows.map((row) => ({
     userId: row.userId,
     username: row.username,
     bio: row.bio ?? undefined,
     favoriteTeamId: row.favoriteTeamId ?? undefined,
-    credits: row.credits,
     xp: row.xp,
     level: row.level,
     streak: row.streak,
@@ -139,17 +158,65 @@ function mapTeams(rows: Array<{ id: string; name: string; shortName: string; cit
   }));
 }
 
-function mapPlayers(rows: Array<{ id: string; name: string; teamId: string; role: string; credits: number; rating: number; nationality: string; selectionPercent: number }>): Player[] {
+function mapPlayers(rows: Array<{ id: string; name: string; teamId: string; role: string; rating: number; nationality: string; selectionPercent: number }>): Player[] {
   return rows.map((row) => ({
     id: row.id,
     name: row.name,
     teamId: row.teamId,
     role: row.role as Player["role"],
-    credits: row.credits,
     rating: row.rating,
     nationality: row.nationality as Player["nationality"],
     selectionPercent: row.selectionPercent
   }));
+}
+
+function preferCanonicalTeamsWithPlayers(
+  rows: Array<{
+    id: string;
+    name: string;
+    shortName: string;
+    city: string;
+    players: Array<{
+      id: string;
+      name: string;
+      teamId: string;
+      role: string;
+      rating: number;
+      nationality: string;
+      selectionPercent: number;
+    }>;
+  }>
+): TeamWithPlayers[] {
+  const canonicalByShortName = new Map<string, TeamWithPlayers>();
+
+  for (const row of rows) {
+    const normalizedTeam = normalizeIplTeam(mapTeams([row])[0]);
+    const players = mapPlayers(row.players);
+    const nextTeam: TeamWithPlayers = {
+      ...normalizedTeam,
+      players
+    };
+
+    const current = canonicalByShortName.get(nextTeam.shortName);
+    if (!current) {
+      canonicalByShortName.set(nextTeam.shortName, nextTeam);
+      continue;
+    }
+
+    const shouldReplace =
+      nextTeam.players.length > current.players.length ||
+      (nextTeam.players.length === current.players.length &&
+        current.id.startsWith("team-") &&
+        nextTeam.id.startsWith("provider:"));
+
+    if (shouldReplace) {
+      canonicalByShortName.set(nextTeam.shortName, nextTeam);
+    }
+  }
+
+  return [...canonicalByShortName.values()].sort((left, right) =>
+    left.name.localeCompare(right.name)
+  );
 }
 
 function mapMatches(rows: Array<{ id: string; homeTeamId: string; awayTeamId: string; startsAt: Date; venue: string; state: string }>): Match[] {
@@ -163,16 +230,14 @@ function mapMatches(rows: Array<{ id: string; homeTeamId: string; awayTeamId: st
   }));
 }
 
-function mapContests(rows: Array<{ id: string; name: string; kind: string; matchId: string; leagueId: string | null; salaryCap: number; rosterRules: Prisma.JsonValue; iplRules: Prisma.JsonValue; lockTime: Date; rewards: Prisma.JsonValue }>): Contest[] {
+function mapContests(rows: Array<{ id: string; name: string; kind: string; matchId: string; leagueId: string | null; rosterRules: Prisma.JsonValue; lockTime: Date; rewards: Prisma.JsonValue }>): Contest[] {
   return rows.map((row) => ({
     id: row.id,
     name: row.name,
     kind: row.kind as Contest["kind"],
     matchId: row.matchId,
     leagueId: row.leagueId ?? undefined,
-    salaryCap: row.salaryCap,
     rosterRules: asJson<Contest["rosterRules"]>(row.rosterRules),
-    iplRules: asJson<Contest["iplRules"]>(row.iplRules),
     lockTime: row.lockTime.toISOString(),
     rewards: asJson<Contest["rewards"]>(row.rewards)
   }));
@@ -186,13 +251,16 @@ function mapLeagues(rows: Array<{
   createdBy: string;
   inviteCode: string;
   bannerStyle: string;
+  maxMembers: number;
+  squadSize: number;
   members: Array<{ userId: string }>;
   contests: Array<{ id: string }>;
+  auctionRooms?: Array<{ id: string }>;
 }>): League[] {
   return rows.map((row) => toLeagueDto(row));
 }
 
-function mapRosters(rows: Array<{ id: string; contestId: string; userId: string; players: Prisma.JsonValue; captainPlayerId: string; viceCaptainPlayerId: string; impactPlayerId: string | null; totalCredits: number; submittedAt: Date; locked: boolean; hasUncappedPlayer: boolean }>): Roster[] {
+function mapRosters(rows: Array<{ id: string; contestId: string; userId: string; players: Prisma.JsonValue; captainPlayerId: string; viceCaptainPlayerId: string; submittedAt: Date; locked: boolean }>): Roster[] {
   return rows.map((row) => toRosterDto(row));
 }
 
@@ -204,6 +272,56 @@ function mapScoreEvents(rows: Array<{ id: string; matchId: string; playerId: str
     label: row.label,
     points: row.points,
     createdAt: row.createdAt.toISOString()
+  }));
+}
+
+function mapPlayerMatchStatLines(rows: Array<{
+  id: string;
+  matchId: string;
+  playerId: string;
+  runs: number;
+  balls: number;
+  fours: number;
+  sixes: number;
+  wickets: number;
+  maidens: number;
+  dotBalls: number;
+  catches: number;
+  stumpings: number;
+  runOuts: number;
+  runsConceded: number;
+  ballsBowled: number;
+  battingStrikeRate: number | null;
+  bowlingEconomy: number | null;
+  didPlay: boolean;
+  didBat: boolean;
+  didBowl: boolean;
+  didField: boolean;
+  sourceUpdatedAt: Date;
+}>): PlayerMatchStatLine[] {
+  return rows.map((row) => ({
+    id: row.id,
+    matchId: row.matchId,
+    playerId: row.playerId,
+    runs: row.runs,
+    balls: row.balls,
+    fours: row.fours,
+    sixes: row.sixes,
+    wickets: row.wickets,
+    maidens: row.maidens,
+    dotBalls: row.dotBalls,
+    catches: row.catches,
+    stumpings: row.stumpings,
+    runOuts: row.runOuts,
+    runsConceded: row.runsConceded,
+    ballsBowled: row.ballsBowled,
+    battingStrikeRate: row.battingStrikeRate ?? undefined,
+    bowlingEconomy: row.bowlingEconomy ?? undefined,
+    didPlay: row.didPlay,
+    didBat: row.didBat,
+    didBowl: row.didBowl,
+    didField: row.didField,
+    sourceUpdatedAt: row.sourceUpdatedAt.toISOString()
   }));
 }
 
@@ -398,8 +516,11 @@ function toLeagueDto(row: {
   createdBy: string;
   inviteCode: string;
   bannerStyle: string;
+  maxMembers: number;
+  squadSize: number;
   members: Array<{ userId: string }>;
   contests?: Array<{ id: string }>;
+  auctionRooms?: Array<{ id: string }>;
 }): League {
   return {
     id: row.id,
@@ -410,7 +531,11 @@ function toLeagueDto(row: {
     inviteCode: row.inviteCode,
     memberIds: row.members.map((member) => member.userId),
     contestIds: (row.contests ?? []).map((contest) => contest.id),
-    bannerStyle: row.bannerStyle
+    bannerStyle: row.bannerStyle,
+    mode: "season",
+    maxMembers: row.maxMembers,
+    squadSize: row.squadSize,
+    auctionRoomId: row.auctionRooms?.[0]?.id
   };
 }
 
@@ -421,11 +546,8 @@ function toRosterDto(row: {
   players: Prisma.JsonValue;
   captainPlayerId: string;
   viceCaptainPlayerId: string;
-  impactPlayerId: string | null;
-  totalCredits: number;
   submittedAt: Date;
   locked: boolean;
-  hasUncappedPlayer: boolean;
 }): Roster {
   return {
     id: row.id,
@@ -434,11 +556,8 @@ function toRosterDto(row: {
     players: asJson<Roster["players"]>(row.players),
     captainPlayerId: row.captainPlayerId,
     viceCaptainPlayerId: row.viceCaptainPlayerId,
-    impactPlayerId: row.impactPlayerId ?? undefined,
-    totalCredits: row.totalCredits,
     submittedAt: row.submittedAt.toISOString(),
-    locked: row.locked,
-    hasUncappedPlayer: row.hasUncappedPlayer
+    locked: row.locked
   };
 }
 
@@ -447,6 +566,7 @@ function buildLeaderboardEntries(
   rosters: Roster[],
   players: Player[],
   events: FantasyScoreEvent[],
+  statLines: PlayerMatchStatLine[],
   previousEntries: LeaderboardEntry[]
 ): LeaderboardEntry[] {
   const previousRanks = new Map(previousEntries.map((entry) => [entry.userId, entry.rank]));
@@ -454,7 +574,7 @@ function buildLeaderboardEntries(
   return rosters
     .map((roster) => ({
       roster,
-      score: calculateRosterPoints(roster, players, events).total
+      score: calculateRosterPoints(roster, players, events, statLines).total
     }))
     .sort((left, right) => right.score - left.score)
     .map(({ roster, score }, index) => {
@@ -476,122 +596,11 @@ function buildLeaderboardEntries(
 
 type ProviderStateRow = Pick<
   ProviderStateModel,
-  "id" | "status" | "syncedAt" | "lastAttemptedAt"
+  "id" | "status" | "syncedAt" | "lastAttemptedAt" | "requestDayKey" | "dailyRequestCount" | "blockedUntil"
 >;
-
-interface InformationSchemaColumn {
-  table_name: string;
-  column_name: string;
-  data_type: string;
-}
 
 export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
-
-  private async ensureRuntimeCompatibility(): Promise<void> {
-    const columns = await this.client.$queryRawUnsafe<InformationSchemaColumn[]>(`
-      SELECT
-        table_name::TEXT AS table_name,
-        column_name::TEXT AS column_name,
-        data_type::TEXT AS data_type
-      FROM information_schema.columns
-      WHERE table_schema = 'public'
-        AND table_name IN ('User', 'Profile', 'Friendship', 'CosmeticItem', 'League', 'Contest', 'LeagueMember')
-    `);
-
-    const hasColumn = (tableName: string, columnName: string) =>
-      columns.some(
-        (column) => column.table_name === tableName && column.column_name === columnName
-      );
-    const columnType = (tableName: string, columnName: string) =>
-      columns.find(
-        (column) => column.table_name === tableName && column.column_name === columnName
-      )?.data_type;
-
-    await this.client.$executeRawUnsafe(`
-      ALTER TABLE "User"
-      ADD COLUMN IF NOT EXISTS "isAdmin" BOOLEAN NOT NULL DEFAULT false
-    `);
-    await this.client.$executeRawUnsafe(`
-      ALTER TABLE "Profile"
-      ADD COLUMN IF NOT EXISTS "credits" DOUBLE PRECISION NOT NULL DEFAULT 100
-    `);
-    await this.client.$executeRawUnsafe(`
-      ALTER TABLE "Profile"
-      ADD COLUMN IF NOT EXISTS "onboardingCompleted" BOOLEAN NOT NULL DEFAULT false
-    `);
-
-    await this.client.$executeRawUnsafe(`
-      ALTER TABLE "Friendship"
-      ADD COLUMN IF NOT EXISTS "pairKey" TEXT
-    `);
-    await this.client.$executeRawUnsafe(`
-      UPDATE "Friendship"
-      SET "pairKey" = CASE
-        WHEN "requesterId" <= "addresseeId" THEN "requesterId" || ':' || "addresseeId"
-        ELSE "addresseeId" || ':' || "requesterId"
-      END
-      WHERE "pairKey" IS NULL OR "pairKey" = ''
-    `);
-
-    if (!hasColumn("CosmeticItem", "resaleValue")) {
-      await this.client.$executeRawUnsafe(`
-        ALTER TABLE "CosmeticItem"
-        ADD COLUMN IF NOT EXISTS "resaleValue" DOUBLE PRECISION NOT NULL DEFAULT 0
-      `);
-    } else if (columnType("CosmeticItem", "resaleValue") === "boolean") {
-      await this.client.$executeRawUnsafe(`
-        ALTER TABLE "CosmeticItem"
-        ALTER COLUMN "resaleValue" DROP DEFAULT
-      `);
-      await this.client.$executeRawUnsafe(`
-        ALTER TABLE "CosmeticItem"
-        ALTER COLUMN "resaleValue"
-        TYPE DOUBLE PRECISION
-        USING CASE WHEN "resaleValue" THEN 1::double precision ELSE 0::double precision END
-      `);
-      await this.client.$executeRawUnsafe(`
-        ALTER TABLE "CosmeticItem"
-        ALTER COLUMN "resaleValue" SET DEFAULT 0
-      `);
-    }
-
-    await this.client.$executeRawUnsafe(`
-      CREATE TABLE IF NOT EXISTS "LeagueMember" (
-        "leagueId" TEXT NOT NULL,
-        "userId" TEXT NOT NULL,
-        "joinedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        CONSTRAINT "LeagueMember_pkey" PRIMARY KEY ("leagueId", "userId")
-      )
-    `);
-    await this.client.$executeRawUnsafe(`
-      CREATE INDEX IF NOT EXISTS "LeagueMember_userId_idx"
-      ON "LeagueMember"("userId")
-    `);
-
-    if (hasColumn("League", "memberIds")) {
-      await this.client.$executeRawUnsafe(`
-        INSERT INTO "LeagueMember" ("leagueId", "userId", "joinedAt")
-        SELECT l.id, member_id, CURRENT_TIMESTAMP
-        FROM "League" l,
-          UNNEST(COALESCE(l."memberIds", ARRAY[]::TEXT[])) AS member_id
-        ON CONFLICT ("leagueId", "userId") DO NOTHING
-      `);
-    }
-
-    if (hasColumn("League", "contestIds")) {
-      await this.client.$executeRawUnsafe(`
-        UPDATE "Contest" c
-        SET "leagueId" = src.league_id
-        FROM (
-          SELECT l.id AS league_id, UNNEST(COALESCE(l."contestIds", ARRAY[]::TEXT[])) AS contest_id
-          FROM "League" l
-        ) src
-        WHERE c.id = src.contest_id
-          AND c."leagueId" IS NULL
-      `);
-    }
-  }
 
   async listProfileUsernamesByBase(baseUsername: string): Promise<string[]> {
     const rows = await this.client.profile.findMany({
@@ -639,7 +648,6 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
         username: row.profile.username,
         bio: row.profile.bio ?? undefined,
         favoriteTeamId: row.profile.favoriteTeamId ?? undefined,
-        credits: row.profile.credits,
         xp: row.profile.xp,
         level: row.profile.level,
         streak: row.profile.streak,
@@ -682,7 +690,6 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
           username: payload.profile.username,
           bio: payload.profile.bio ?? null,
           favoriteTeamId: payload.profile.favoriteTeamId ?? null,
-          credits: payload.profile.credits,
           xp: payload.profile.xp,
           level: payload.profile.level,
           streak: payload.profile.streak,
@@ -783,7 +790,6 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
       username: profile.username,
       bio: profile.bio ?? undefined,
       favoriteTeamId: profile.favoriteTeamId ?? undefined,
-      credits: profile.credits,
       xp: profile.xp,
       level: profile.level,
       streak: profile.streak,
@@ -828,6 +834,336 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
     });
 
     return user?.isAdmin ?? false;
+  }
+
+  async getBootstrapPayload(userId: string): Promise<BootstrapPayload> {
+    const [userRow, teamRows] = await Promise.all([
+      this.client.user.findUnique({
+        where: { id: userId },
+        include: {
+          profile: true
+        }
+      }),
+      this.client.team.findMany({
+        orderBy: [{ name: "asc" }]
+      })
+    ]);
+
+    if (!userRow) {
+      throw new Error("Unknown user.");
+    }
+
+    if (!userRow.profile) {
+      throw new Error("Unknown profile.");
+    }
+
+    return {
+      user: mapUsers([userRow])[0],
+      profile: mapProfiles([userRow.profile])[0],
+      teams: mapTeams(teamRows).map((team) => normalizeIplTeam(team))
+    };
+  }
+
+  async getHomePagePayload(userId: string): Promise<HomePagePayload> {
+    const [userRow, contests, leagues, inventory] = await Promise.all([
+      this.client.user.findUnique({
+        where: { id: userId },
+        include: {
+          profile: true
+        }
+      }),
+      this.getVisibleContestsForUser(userId),
+      this.getVisibleLeaguesForUser(userId),
+      this.getInventoryForUser(userId)
+    ]);
+
+    if (!userRow) {
+      throw new Error("Unknown user.");
+    }
+
+    if (!userRow.profile) {
+      throw new Error("Unknown profile.");
+    }
+
+    const matchIds = [...new Set(contests.map((contest) => contest.matchId))];
+    const [providerHomeMatchRows, contestMatchRows, fallbackMatchRows, anyMatchRows] =
+      await Promise.all([
+        this.client.match.findMany({
+          where: {
+            id: {
+              startsWith: "provider:"
+            },
+            state: {
+              in: ["live", "scheduled"]
+            }
+          },
+          orderBy: [{ startsAt: "asc" }],
+          take: 8
+        }),
+        matchIds.length
+          ? this.client.match.findMany({
+              where: {
+                id: {
+                  in: matchIds
+                }
+              }
+            })
+          : Promise.resolve([]),
+        this.client.match.findMany({
+          where: {
+            state: {
+              in: ["live", "scheduled"]
+            }
+          },
+          orderBy: [{ startsAt: "asc" }],
+          take: 8
+        }),
+        this.client.match.findMany({
+          orderBy: [{ startsAt: "asc" }],
+          take: 8
+        })
+      ]);
+
+    const matchRows =
+      providerHomeMatchRows.length > 0
+        ? providerHomeMatchRows
+        : contestMatchRows.length > 0
+          ? contestMatchRows
+          : fallbackMatchRows.length > 0
+            ? fallbackMatchRows
+            : anyMatchRows;
+
+    const matches = mapMatches(matchRows);
+    const teamIds = [...new Set(matches.flatMap((match) => [match.homeTeamId, match.awayTeamId]))];
+    const teamRows = teamIds.length
+      ? await this.client.team.findMany({
+          where: {
+            id: {
+              in: teamIds
+            }
+          }
+        })
+      : [];
+
+    return {
+      user: mapUsers([userRow])[0],
+      profile: mapProfiles([userRow.profile])[0],
+      contests,
+      matches,
+      teams: mapTeams(teamRows).map((team) => normalizeIplTeam(team)),
+      leagueCount: leagues.length,
+      lockerItemCount: inventory.inventory.cosmeticIds.length
+    };
+  }
+
+  async getTeamsWithPlayers(): Promise<TeamWithPlayers[]> {
+    const rows = await this.client.team.findMany({
+      include: {
+        players: true
+      },
+      orderBy: [{ shortName: "asc" }]
+    });
+
+    return preferCanonicalTeamsWithPlayers(rows);
+  }
+
+  async getContestPagePayload(userId: string): Promise<ContestPagePayload> {
+    const [userRow, contests] = await Promise.all([
+      this.client.user.findUnique({
+        where: { id: userId },
+        include: {
+          profile: true
+        }
+      }),
+      this.getVisibleContestsForUser(userId)
+    ]);
+
+    if (!userRow) {
+      throw new Error("Unknown user.");
+    }
+
+    if (!userRow.profile) {
+      throw new Error("Unknown profile.");
+    }
+
+    const matchIds = [...new Set(contests.map((contest) => contest.matchId))];
+    const matchRows = matchIds.length
+      ? await this.client.match.findMany({
+          where: {
+            id: {
+              in: matchIds
+            }
+          }
+        })
+      : [];
+    const matches = mapMatches(matchRows);
+    const teamIds = [...new Set(matches.flatMap((match) => [match.homeTeamId, match.awayTeamId]))];
+    const contestIds = contests.map((contest) => contest.id);
+
+    const [teamRows, playerRows, rosterRows, leaderboardGroups] = await Promise.all([
+      teamIds.length
+        ? this.client.team.findMany({
+            where: {
+              id: {
+                in: teamIds
+              }
+            }
+          })
+        : Promise.resolve([]),
+      teamIds.length
+        ? this.client.player.findMany({
+            where: {
+              teamId: {
+                in: teamIds
+              }
+            }
+          })
+        : Promise.resolve([]),
+      contestIds.length
+        ? this.client.roster.findMany({
+            where: {
+              contestId: {
+                in: contestIds
+              },
+              userId
+            }
+          })
+        : Promise.resolve([]),
+      contestIds.length
+        ? Promise.all(
+            contestIds.map((contestId) =>
+              this.client.leaderboardEntry.findMany({
+                where: { contestId },
+                orderBy: [{ rank: "asc" }, { points: "desc" }],
+                take: DASHBOARD_LEADERBOARD_LIMIT
+              })
+            )
+          )
+        : Promise.resolve([])
+    ]);
+
+    const leaderboardRows = leaderboardGroups.flat();
+    const leaderboardUserIds = [...new Set(leaderboardRows.map((entry) => entry.userId))];
+    const [leaderboardProfileRows, leaderboardUserRows] = await Promise.all([
+      leaderboardUserIds.length
+        ? this.client.profile.findMany({
+            where: {
+              userId: {
+                in: leaderboardUserIds
+              }
+            }
+          })
+        : Promise.resolve([]),
+      leaderboardUserIds.length
+        ? this.client.user.findMany({
+            where: {
+              id: {
+                in: leaderboardUserIds
+              }
+            }
+          })
+        : Promise.resolve([])
+    ]);
+
+    return {
+      contests,
+      matches,
+      teams: mapTeams(teamRows).map((team) => normalizeIplTeam(team)),
+      players: mapPlayers(playerRows),
+      rosters: mapRosters(rosterRows),
+      leaderboard: withLeaderboardDisplayNames(
+        mapLeaderboard(leaderboardRows),
+        mapProfiles(leaderboardProfileRows),
+        mapUsers(leaderboardUserRows)
+      )
+    };
+  }
+
+  async getPredictionPagePayload(userId: string): Promise<PredictionPagePayload> {
+    const [userRow, feed] = await Promise.all([
+      this.client.user.findUnique({
+        where: { id: userId },
+        include: {
+          profile: true
+        }
+      }),
+      this.getPredictionFeedForUser(userId)
+    ]);
+
+    if (!userRow) {
+      throw new Error("Unknown user.");
+    }
+
+    if (!userRow.profile) {
+      throw new Error("Unknown profile.");
+    }
+
+    const matchIds = [...new Set(feed.questions.map((question) => question.matchId))];
+    const matchRows = matchIds.length
+      ? await this.client.match.findMany({
+          where: {
+            id: {
+              in: matchIds
+            }
+          }
+        })
+      : [];
+    const matches = mapMatches(matchRows);
+    const teamIds = [...new Set(matches.flatMap((match) => [match.homeTeamId, match.awayTeamId]))];
+    const teamRows = teamIds.length
+      ? await this.client.team.findMany({
+          where: {
+            id: {
+              in: teamIds
+            }
+          }
+        })
+      : [];
+
+    return {
+      profile: mapProfiles([userRow.profile])[0],
+      teams: mapTeams(teamRows).map((team) => normalizeIplTeam(team)),
+      questions: feed.questions,
+      answers: feed.answers,
+      results: feed.results
+    };
+  }
+
+  async getInventoryPagePayload(userId: string): Promise<InventoryPagePayload> {
+    const [userRow, inventoryPayload] = await Promise.all([
+      this.client.user.findUnique({
+        where: { id: userId },
+        include: {
+          profile: true
+        }
+      }),
+      this.getInventoryForUser(userId)
+    ]);
+
+    if (!userRow) {
+      throw new Error("Unknown user.");
+    }
+
+    if (!userRow.profile) {
+      throw new Error("Unknown profile.");
+    }
+
+    const badgeRows = inventoryPayload.inventory.badgeIds.length
+      ? await this.client.badge.findMany({
+          where: {
+            id: {
+              in: inventoryPayload.inventory.badgeIds
+            }
+          }
+        })
+      : [];
+
+    return {
+      profile: mapProfiles([userRow.profile])[0],
+      inventory: inventoryPayload.inventory,
+      cosmetics: inventoryPayload.cosmetics,
+      badges: mapBadges(badgeRows)
+    };
   }
 
   async getDashboardPayload(userId: string): Promise<DashboardPayload> {
@@ -996,9 +1332,11 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
     ]);
 
     const publicContests = mapContests(publicContestRows);
+    const providerPublicContests = publicContests.filter((contest) => contest.id.startsWith("provider:"));
+
     return [
-      ...(providerMatchCount > 0
-        ? publicContests.filter((contest) => contest.id.startsWith("provider:"))
+      ...(providerMatchCount > 0 && providerPublicContests.length > 0
+        ? providerPublicContests
         : preferredPublicContests(publicContests)),
       ...mapContests(privateContestRows)
     ];
@@ -1015,6 +1353,11 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
         },
         contests: {
           select: { id: true }
+        },
+        auctionRooms: {
+          select: { id: true },
+          orderBy: [{ createdAt: "desc" }],
+          take: 1
         }
       },
       orderBy: [{ name: "asc" }],
@@ -1224,20 +1567,26 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
     return rows.map((row) => row.id);
   }
 
-  async getProviderStatus(): Promise<AppStore["provider"]> {
+  async getProviderStatus(): Promise<ProviderStateSnapshot> {
     const provider = await this.client.providerState.findUnique({
       where: { id: "default" },
       select: {
         status: true,
         syncedAt: true,
-        lastAttemptedAt: true
+        lastAttemptedAt: true,
+        requestDayKey: true,
+        dailyRequestCount: true,
+        blockedUntil: true
       }
     });
 
     return {
       status: (provider?.status as AppStore["provider"]["status"] | undefined) ?? "idle",
       syncedAt: provider?.syncedAt.toISOString() ?? new Date(0).toISOString(),
-      lastAttemptedAt: provider?.lastAttemptedAt.toISOString() ?? new Date(0).toISOString()
+      lastAttemptedAt: provider?.lastAttemptedAt.toISOString() ?? new Date(0).toISOString(),
+      requestDayKey: provider?.requestDayKey ?? "",
+      dailyRequestCount: provider?.dailyRequestCount ?? 0,
+      blockedUntil: provider?.blockedUntil?.toISOString()
     };
   }
 
@@ -1271,11 +1620,146 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
         })
       ]);
 
+    const todayKey = providerBudgetDayKey();
+    const usedToday = provider.requestDayKey === todayKey ? provider.dailyRequestCount : 0;
+
     return {
       provider,
       hasProviderFeed: providerMatchCount > 0,
-      nextUpcomingProviderMatchStartsAt: nextMatch?.startsAt.toISOString() ?? null
+      nextUpcomingProviderMatchStartsAt: nextMatch?.startsAt.toISOString() ?? null,
+      remainingDailyRequestBudget: Math.max(env.CRICKET_DATA_DAILY_LIMIT - usedToday, 0),
+      dailyRequestLimit: env.CRICKET_DATA_DAILY_LIMIT
     };
+  }
+
+  async reserveProviderApiRequest(limit: number, dayKey: string, blockedUntil: string) {
+    return this.client.$transaction(async (tx) => {
+      const existing = await tx.providerState.findUnique({
+        where: { id: "default" },
+        select: {
+          id: true,
+          status: true,
+          syncedAt: true,
+          lastAttemptedAt: true,
+          requestDayKey: true,
+          dailyRequestCount: true,
+          blockedUntil: true
+        }
+      });
+
+      const activeBlockedUntil =
+        existing?.blockedUntil && existing.blockedUntil.getTime() > Date.now()
+          ? existing.blockedUntil.toISOString()
+          : undefined;
+      if (activeBlockedUntil) {
+        throw new Error(`Provider request budget is blocked until ${activeBlockedUntil}.`);
+      }
+
+      const currentCount = existing?.requestDayKey === dayKey ? existing.dailyRequestCount : 0;
+      if (currentCount >= limit) {
+        await tx.providerState.upsert({
+          where: { id: "default" },
+          update: {
+            blockedUntil: new Date(blockedUntil),
+            requestDayKey: dayKey,
+            dailyRequestCount: currentCount
+          },
+          create: {
+            id: "default",
+            status: existing?.status ?? "idle",
+            syncedAt: existing?.syncedAt ?? new Date(0),
+            lastAttemptedAt: existing?.lastAttemptedAt ?? new Date(0),
+            requestDayKey: dayKey,
+            dailyRequestCount: currentCount,
+            blockedUntil: new Date(blockedUntil)
+          }
+        });
+
+        throw new Error(`Provider request budget exhausted for ${dayKey}.`);
+      }
+
+      const nextCount = currentCount + 1;
+      await tx.providerState.upsert({
+        where: { id: "default" },
+        update: {
+          requestDayKey: dayKey,
+          dailyRequestCount: nextCount,
+          blockedUntil: null
+        },
+        create: {
+          id: "default",
+          status: existing?.status ?? "idle",
+          syncedAt: existing?.syncedAt ?? new Date(0),
+          lastAttemptedAt: existing?.lastAttemptedAt ?? new Date(0),
+          requestDayKey: dayKey,
+          dailyRequestCount: nextCount,
+          blockedUntil: null
+        }
+      });
+
+      return {
+        used: nextCount,
+        remaining: Math.max(limit - nextCount, 0)
+      };
+    });
+  }
+
+  async releaseProviderApiRequest(dayKey: string): Promise<void> {
+    await this.client.$transaction(async (tx) => {
+      const existing = await tx.providerState.findUnique({
+        where: { id: "default" },
+        select: {
+          id: true,
+          requestDayKey: true,
+          dailyRequestCount: true
+        }
+      });
+
+      if (!existing || existing.requestDayKey !== dayKey || existing.dailyRequestCount <= 0) {
+        return;
+      }
+
+      await tx.providerState.update({
+        where: { id: "default" },
+        data: {
+          dailyRequestCount: existing.dailyRequestCount - 1
+        }
+      });
+    });
+  }
+
+  async blockProviderApiUntil(blockedUntil: string, dayKey: string): Promise<void> {
+    const existing = await this.client.providerState.findUnique({
+      where: { id: "default" },
+      select: {
+        id: true,
+        status: true,
+        syncedAt: true,
+        lastAttemptedAt: true,
+        requestDayKey: true,
+        dailyRequestCount: true
+      }
+    });
+
+    const dailyRequestCount = existing?.requestDayKey === dayKey ? existing.dailyRequestCount : 0;
+
+    await this.client.providerState.upsert({
+      where: { id: "default" },
+      update: {
+        requestDayKey: dayKey,
+        dailyRequestCount,
+        blockedUntil: new Date(blockedUntil)
+      },
+      create: {
+        id: "default",
+        status: existing?.status ?? "idle",
+        syncedAt: existing?.syncedAt ?? new Date(0),
+        lastAttemptedAt: existing?.lastAttemptedAt ?? new Date(0),
+        requestDayKey: dayKey,
+        dailyRequestCount,
+        blockedUntil: new Date(blockedUntil)
+      }
+    });
   }
 
   async createLeagueRecord(userId: string, input: CreateLeagueInput): Promise<League> {
@@ -1289,7 +1773,10 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
         visibility: input.visibility,
         createdBy: userId,
         inviteCode,
-        bannerStyle: createLeagueBanner(input.visibility)
+        bannerStyle: createLeagueBanner(input.visibility),
+        leagueType: "season",
+        maxMembers: input.maxMembers,
+        squadSize: DEFAULT_LEAGUE_SQUAD_SIZE
       };
 
       try {
@@ -1322,6 +1809,11 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
               },
               contests: {
                 select: { id: true }
+              },
+              auctionRooms: {
+                select: { id: true },
+                orderBy: [{ createdAt: "desc" }],
+                take: 1
               }
             }
           });
@@ -1355,6 +1847,26 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
         throw new Error("Invite code is invalid.");
       }
 
+      const leagueMeta = await tx.league.findUnique({
+        where: { id: invite.leagueId },
+        select: {
+          id: true,
+          maxMembers: true,
+          members: {
+            select: { userId: true }
+          }
+        }
+      });
+
+      if (!leagueMeta) {
+        throw new Error("League not found.");
+      }
+
+      const alreadyMember = leagueMeta.members.some((member) => member.userId === userId);
+      if (!alreadyMember && leagueMeta.members.length >= leagueMeta.maxMembers) {
+        throw new Error("League is already full.");
+      }
+
       await tx.leagueMember.upsert({
         where: {
           leagueId_userId: {
@@ -1377,11 +1889,61 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
           },
           contests: {
             select: { id: true }
+          },
+          auctionRooms: {
+            select: { id: true },
+            orderBy: [{ createdAt: "desc" }],
+            take: 1
           }
         }
       });
 
       return toLeagueDto(league);
+    });
+  }
+
+  async deleteLeagueRecord(userId: string, leagueId: string): Promise<{ leagueId: string }> {
+    return this.client.$transaction(async (tx) => {
+      const league = await tx.league.findUnique({
+        where: { id: leagueId },
+        select: {
+          id: true,
+          createdBy: true,
+          visibility: true
+        }
+      });
+
+      if (!league) {
+        throw new Error("League not found.");
+      }
+
+      if (league.createdBy !== userId) {
+        throw new Error("Only the league creator can delete this league.");
+      }
+
+      const startedAuction = await tx.auctionRoom.findFirst({
+        where: {
+          leagueId,
+          state: {
+            in: ["live", "completed"]
+          }
+        },
+        select: { id: true }
+      });
+
+      if (startedAuction) {
+        throw new Error("Cannot delete a league after the auction has started.");
+      }
+
+      await tx.invite.deleteMany({
+        where: { leagueId }
+      });
+
+      await tx.league.delete({
+        where: { id: leagueId }
+      });
+
+      return { leagueId };
     });
   }
 
@@ -1407,16 +1969,13 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
       }
 
       const match = mapMatches([matchRow])[0];
-      const [matchPlayersRows, profileRow, existingRow] = await Promise.all([
+      const [matchPlayersRows, existingRow] = await Promise.all([
         tx.player.findMany({
           where: {
             teamId: {
               in: [match.homeTeamId, match.awayTeamId]
             }
           }
-        }),
-        tx.profile.findUnique({
-          where: { userId }
         }),
         tx.roster.findUnique({
           where: {
@@ -1428,38 +1987,24 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
         })
       ]);
 
-      if (!profileRow) {
-        throw new Error("Unknown profile.");
-      }
-
       const matchPlayers = mapPlayers(matchPlayersRows);
       const validation = validateRoster(contest, match, matchPlayers, input, new Date());
       if (!validation.valid) {
         throw new Error(validation.errors.join(" "));
       }
 
-      const previousSpend = existingRow?.totalCredits ?? 0;
-      const nextSpend = validation.totalCredits;
-      const creditDelta = Math.round((nextSpend - previousSpend) * 10) / 10;
-      if (creditDelta > profileRow.credits) {
-        const shortfall = Math.round((creditDelta - profileRow.credits) * 10) / 10;
-        throw new Error(
-          `Not enough credits. You need ${shortfall.toFixed(1)} more credits to save this roster.`
-        );
-      }
-
       const submittedAt = new Date();
       const rosterPayload = {
         contestId,
         userId,
-        players: input.playerIds.map((playerId) => ({ playerId })),
+        players: [
+          ...input.starterPlayerIds.map((playerId) => ({ playerId, isStarter: true })),
+          ...input.substitutePlayerIds.map((playerId) => ({ playerId, isStarter: false }))
+        ],
         captainPlayerId: input.captainPlayerId,
         viceCaptainPlayerId: input.viceCaptainPlayerId,
-        impactPlayerId: "impactPlayerId" in input ? input.impactPlayerId ?? null : null,
-        totalCredits: validation.totalCredits,
         submittedAt,
-        locked: submittedAt >= new Date(contest.lockTime),
-        hasUncappedPlayer: validation.hasUncappedPlayer
+        locked: submittedAt >= new Date(contest.lockTime)
       };
 
       const savedRoster = await tx.roster.upsert({
@@ -1476,18 +2021,14 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
         }
       });
 
-      await tx.profile.update({
-        where: { userId },
-        data: {
-          credits: Math.round((profileRow.credits - creditDelta) * 10) / 10
-        }
-      });
-
-      const [rosterRows, eventRows, previousEntries] = await Promise.all([
+      const [rosterRows, eventRows, statLineRows, previousEntries] = await Promise.all([
         tx.roster.findMany({
           where: { contestId }
         }),
         tx.fantasyScoreEvent.findMany({
+          where: { matchId: contest.matchId }
+        }),
+        tx.playerMatchStatLine.findMany({
           where: { matchId: contest.matchId }
         }),
         tx.leaderboardEntry.findMany({
@@ -1500,6 +2041,7 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
         mapRosters(rosterRows),
         matchPlayers,
         mapScoreEvents(eventRows),
+        mapPlayerMatchStatLines(statLineRows),
         mapLeaderboard(previousEntries)
       );
 
@@ -1833,7 +2375,7 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
         }
       });
 
-      const [contestRows, playerRows, scoreEventRows] = await Promise.all([
+      const [contestRows, playerRows, statLineRows, scoreEventRows] = await Promise.all([
         tx.contest.findMany({
           where: { matchId }
         }),
@@ -1844,12 +2386,16 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
             }
           }
         }),
+        tx.playerMatchStatLine.findMany({
+          where: { matchId }
+        }),
         tx.fantasyScoreEvent.findMany({
           where: { matchId }
         })
       ]);
 
       const players = mapPlayers(playerRows);
+      const statLines = mapPlayerMatchStatLines(statLineRows);
       const events = mapScoreEvents(scoreEventRows);
       const nextEntries: LeaderboardEntry[] = [];
 
@@ -1869,6 +2415,7 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
             mapRosters(rosterRows),
             players,
             events,
+            statLines,
             mapLeaderboard(previousEntries)
           )
         );
@@ -1912,7 +2459,7 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
         continue;
       }
 
-      const [rosterRows, playerRows, eventRows, previousEntries] = await Promise.all([
+      const [rosterRows, playerRows, statLineRows, eventRows, previousEntries] = await Promise.all([
         this.client.roster.findMany({
           where: { contestId: contest.id }
         }),
@@ -1922,6 +2469,9 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
               in: [match.homeTeamId, match.awayTeamId]
             }
           }
+        }),
+        this.client.playerMatchStatLine.findMany({
+          where: { matchId: contest.matchId }
         }),
         this.client.fantasyScoreEvent.findMany({
           where: { matchId: contest.matchId }
@@ -1936,6 +2486,7 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
         mapRosters(rosterRows),
         mapPlayers(playerRows),
         mapScoreEvents(eventRows),
+        mapPlayerMatchStatLines(statLineRows),
         mapLeaderboard(previousEntries)
       );
 
@@ -2054,7 +2605,6 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
             name: player.name,
             teamId: player.teamId,
             role: player.role,
-            credits: player.credits,
             rating: player.rating,
             nationality: player.nationality,
             selectionPercent: player.selectionPercent
@@ -2064,7 +2614,6 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
             name: player.name,
             teamId: player.teamId,
             role: player.role,
-            credits: player.credits,
             rating: player.rating,
             nationality: player.nationality,
             selectionPercent: player.selectionPercent
@@ -2101,9 +2650,7 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
             kind: contest.kind,
             matchId: contest.matchId,
             leagueId: contest.leagueId ?? null,
-            salaryCap: contest.salaryCap,
             rosterRules: inputJson(contest.rosterRules),
-            iplRules: inputJson(contest.iplRules),
             lockTime: new Date(contest.lockTime),
             rewards: inputJson(contest.rewards)
           },
@@ -2113,9 +2660,7 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
             kind: contest.kind,
             matchId: contest.matchId,
             leagueId: contest.leagueId ?? null,
-            salaryCap: contest.salaryCap,
             rosterRules: inputJson(contest.rosterRules),
-            iplRules: inputJson(contest.iplRules),
             lockTime: new Date(contest.lockTime),
             rewards: inputJson(contest.rewards)
           }
@@ -2153,10 +2698,47 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
         });
       }
 
-      await tx.fantasyScoreEvent.deleteMany({
+      await tx.playerMatchStatLine.deleteMany({
         where: {
           matchId: {
             startsWith: "provider:"
+          }
+        }
+      });
+
+      if (snapshot.statLines.length) {
+        await tx.playerMatchStatLine.createMany({
+          data: snapshot.statLines.map((line) => ({
+            id: line.id,
+            matchId: line.matchId,
+            playerId: line.playerId,
+            runs: line.runs,
+            balls: line.balls,
+            fours: line.fours,
+            sixes: line.sixes,
+            wickets: line.wickets,
+            maidens: line.maidens,
+            dotBalls: line.dotBalls,
+            catches: line.catches,
+            stumpings: line.stumpings,
+            runOuts: line.runOuts,
+            runsConceded: line.runsConceded,
+            ballsBowled: line.ballsBowled,
+            battingStrikeRate: line.battingStrikeRate ?? null,
+            bowlingEconomy: line.bowlingEconomy ?? null,
+            didPlay: line.didPlay,
+            didBat: line.didBat,
+            didBowl: line.didBowl,
+            didField: line.didField,
+            sourceUpdatedAt: new Date(line.sourceUpdatedAt)
+          }))
+        });
+      }
+
+      await tx.fantasyScoreEvent.deleteMany({
+        where: {
+          id: {
+            startsWith: "provider:score:"
           }
         }
       });
@@ -2289,7 +2871,16 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
       }
 
       const providerContests = snapshot.contests;
-      const providerEvents = snapshot.scoreEvents;
+      const providerStatLines = snapshot.statLines;
+      const providerEvents = mapScoreEvents(
+        await tx.fantasyScoreEvent.findMany({
+          where: {
+            matchId: {
+              startsWith: "provider:"
+            }
+          }
+        })
+      );
       const matchMap = new Map(snapshot.matches.map((match) => [match.id, match]));
       const refreshedRosters = mapRosters(
         await tx.roster.findMany({
@@ -2335,6 +2926,9 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
           (player) =>
             player.teamId === match.homeTeamId || player.teamId === match.awayTeamId
         );
+        const contestStatLines = providerStatLines.filter(
+          (line) => line.matchId === contest.matchId
+        );
         const contestEvents = providerEvents.filter((event) => event.matchId === contest.matchId);
         const contestRosters = refreshedRosters.filter((roster) => roster.contestId === contest.id);
         const previousContestEntries = previousEntriesByContest.get(contest.id) ?? [];
@@ -2345,6 +2939,7 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
             contestRosters,
             contestPlayers,
             contestEvents,
+            contestStatLines,
             previousContestEntries
           )
         );
@@ -2383,8 +2978,6 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
   }
 
   async initialize(seedStore: AppStore): Promise<void> {
-    await this.ensureRuntimeCompatibility();
-
     const userCount = await this.client.user.count();
     if (userCount === 0) {
       await this.seedDatabase(seedStore);
@@ -2458,7 +3051,6 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
             username: profile.username,
             bio: profile.bio ?? null,
             favoriteTeamId: profile.favoriteTeamId ?? null,
-            credits: profile.credits,
             xp: profile.xp,
             level: profile.level,
             streak: profile.streak,
@@ -2516,7 +3108,6 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
             name: player.name,
             teamId: player.teamId,
             role: player.role,
-            credits: player.credits,
             rating: player.rating,
             nationality: player.nationality,
             selectionPercent: player.selectionPercent
@@ -2585,9 +3176,7 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
             kind: contest.kind,
             matchId: contest.matchId,
             leagueId: contest.leagueId ?? null,
-            salaryCap: contest.salaryCap,
             rosterRules: inputJson(contest.rosterRules),
-            iplRules: inputJson(contest.iplRules),
             lockTime: new Date(contest.lockTime),
             rewards: inputJson(contest.rewards)
           }))
@@ -2603,11 +3192,37 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
             players: inputJson(roster.players),
             captainPlayerId: roster.captainPlayerId,
             viceCaptainPlayerId: roster.viceCaptainPlayerId,
-            impactPlayerId: roster.impactPlayerId ?? null,
-            totalCredits: roster.totalCredits,
             submittedAt: new Date(roster.submittedAt),
-            locked: roster.locked,
-            hasUncappedPlayer: roster.hasUncappedPlayer
+            locked: roster.locked
+          }))
+        });
+      }
+
+      if (store.playerMatchStatLines.length) {
+        await tx.playerMatchStatLine.createMany({
+          data: store.playerMatchStatLines.map((line) => ({
+            id: line.id,
+            matchId: line.matchId,
+            playerId: line.playerId,
+            runs: line.runs,
+            balls: line.balls,
+            fours: line.fours,
+            sixes: line.sixes,
+            wickets: line.wickets,
+            maidens: line.maidens,
+            dotBalls: line.dotBalls,
+            catches: line.catches,
+            stumpings: line.stumpings,
+            runOuts: line.runOuts,
+            runsConceded: line.runsConceded,
+            ballsBowled: line.ballsBowled,
+            battingStrikeRate: line.battingStrikeRate ?? null,
+            bowlingEconomy: line.bowlingEconomy ?? null,
+            didPlay: line.didPlay,
+            didBat: line.didBat,
+            didBowl: line.didBowl,
+            didField: line.didField,
+            sourceUpdatedAt: new Date(line.sourceUpdatedAt)
           }))
         });
       }
@@ -2744,7 +3359,10 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
         id: "default",
         status: store.provider.status,
         syncedAt: new Date(store.provider.syncedAt),
-        lastAttemptedAt: new Date(store.provider.lastAttemptedAt)
+        lastAttemptedAt: new Date(store.provider.lastAttemptedAt),
+        requestDayKey: "",
+        dailyRequestCount: 0,
+        blockedUntil: null
       };
 
       await tx.providerState.create({
@@ -2753,14 +3371,17 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
     }, SNAPSHOT_TRANSACTION_OPTIONS);
   }
 
-  async updateProviderState(patch: Partial<AppStore["provider"]>): Promise<void> {
+  async updateProviderState(patch: Partial<ProviderStateSnapshot>): Promise<void> {
     const existing = (await this.client.providerState.findUnique({
       where: { id: "default" },
       select: {
         id: true,
         status: true,
         syncedAt: true,
-        lastAttemptedAt: true
+        lastAttemptedAt: true,
+        requestDayKey: true,
+        dailyRequestCount: true,
+        blockedUntil: true
       }
     })) as ProviderStateRow | null;
 
@@ -2771,7 +3392,14 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
         : existing?.syncedAt ?? new Date(0),
       lastAttemptedAt: patch.lastAttemptedAt
         ? new Date(patch.lastAttemptedAt)
-        : existing?.lastAttemptedAt ?? new Date(0)
+        : existing?.lastAttemptedAt ?? new Date(0),
+      requestDayKey: patch.requestDayKey ?? existing?.requestDayKey ?? "",
+      dailyRequestCount: patch.dailyRequestCount ?? existing?.dailyRequestCount ?? 0,
+      blockedUntil: patch.blockedUntil
+        ? new Date(patch.blockedUntil)
+        : patch.blockedUntil === undefined
+          ? existing?.blockedUntil ?? null
+          : null
     };
 
     const createData: ProviderStateCreateInput = {
@@ -2782,7 +3410,14 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
         : existing?.syncedAt ?? new Date(0),
       lastAttemptedAt: patch.lastAttemptedAt
         ? new Date(patch.lastAttemptedAt)
-        : existing?.lastAttemptedAt ?? new Date(0)
+        : existing?.lastAttemptedAt ?? new Date(0),
+      requestDayKey: patch.requestDayKey ?? existing?.requestDayKey ?? "",
+      dailyRequestCount: patch.dailyRequestCount ?? existing?.dailyRequestCount ?? 0,
+      blockedUntil: patch.blockedUntil
+        ? new Date(patch.blockedUntil)
+        : patch.blockedUntil === undefined
+          ? existing?.blockedUntil ?? null
+          : null
     };
 
     await this.client.providerState.upsert({

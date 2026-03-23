@@ -17,11 +17,7 @@ export function createInventoryRouter({ authService, gameService }: ApiDependenc
     }
 
     try {
-      const inventory = await gameService.getInventory(userId);
-      res.json({
-        cosmetics: inventory.cosmetics,
-        equipped: inventory.inventory.equipped
-      });
+      res.json(await gameService.getInventoryPage(userId));
     } catch (error) {
       sendError(res, 404, error, "Inventory not found.");
     }

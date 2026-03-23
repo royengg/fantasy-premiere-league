@@ -8,23 +8,30 @@ datasource db {
 }
 
 model User {
-  id           String             @id
-  email        String             @unique
-  name         String
-  isAdmin      Boolean            @default(false)
-  createdAt    DateTime           @default(now())
-  credential   AuthCredential?
-  profile      Profile?
-  inventory    UserInventory?
-  sessions     Session[]
-  rosters      Roster[]
-  friendshipsA Friendship[]       @relation("FriendshipRequester")
-  friendshipsB Friendship[]       @relation("FriendshipAddressee")
-  answers      PredictionAnswer[]
-  results      PredictionResult[]
-  xpLedger     XPTransaction[]
-  unlocks      CosmeticUnlock[]
+  id                String               @id
+  email             String               @unique
+  name              String
+  isAdmin           Boolean              @default(false)
+  createdAt         DateTime             @default(now())
+  credential        AuthCredential?
+  profile           Profile?
+  inventory         UserInventory?
+  sessions          Session[]
+  rosters           Roster[]
+  friendshipsA      Friendship[]         @relation("FriendshipRequester")
+  friendshipsB      Friendship[]         @relation("FriendshipAddressee")
+  answers           PredictionAnswer[]
+  results           PredictionResult[]
+  xpLedger          XPTransaction[]
+  unlocks           CosmeticUnlock[]
   leagueMemberships LeagueMember[]
+  hostedAuctionRooms AuctionRoom[]       @relation("HostedAuctionRooms")
+  auctionSeats      AuctionParticipant[] @relation("AuctionParticipants")
+  auctionBids       AuctionBid[]         @relation("AuctionBids")
+  soldAuctionLots   AuctionPoolEntry[]   @relation("AuctionPoolSoldTo")
+  auctionSkipVotes  AuctionSkipVote[]    @relation("AuctionSkipVotes")
+  auctionWithdrawals AuctionWithdrawal[] @relation("AuctionWithdrawals")
+  auctionEvents     AuctionEventLog[]    @relation("AuctionEvents")
 }
 
 model Profile {
@@ -32,7 +39,6 @@ model Profile {
   username           String  @unique
   bio                String?
   favoriteTeamId     String?
-  credits            Float   @default(100)
   xp                 Int     @default(0)
   level              Int     @default(1)
   streak             Int     @default(0)
@@ -92,15 +98,15 @@ model Team {
 }
 
 model Player {
-  id               String  @id
+  id               String           @id
   name             String
   teamId           String
   role             String
-  credits          Float
   rating           Float
   nationality      String
   selectionPercent Float
-  team             Team    @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  team             Team             @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  auctionPoolEntries AuctionPoolEntry[]
 }
 
 model Match {
@@ -118,9 +124,7 @@ model Contest {
   kind        String
   matchId     String
   leagueId    String?
-  salaryCap   Float
   rosterRules Json
-  iplRules    Json
   lockTime    DateTime
   rewards     Json
   league      League?  @relation(fields: [leagueId], references: [id], onDelete: SetNull)
@@ -138,8 +142,12 @@ model League {
   createdBy   String
   inviteCode  String   @unique
   bannerStyle String
+  leagueType  String   @default("season") @map("league_type")
+  maxMembers  Int      @default(15)
+  squadSize   Int      @default(13)
   members     LeagueMember[]
   contests    Contest[]
+  auctionRooms AuctionRoom[]
 }
 
 model LeagueMember {
@@ -160,16 +168,42 @@ model Roster {
   players             Json
   captainPlayerId     String
   viceCaptainPlayerId String
-  impactPlayerId      String?
-  totalCredits        Float
   submittedAt         DateTime
   locked              Boolean
-  hasUncappedPlayer   Boolean
   user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   contest             Contest  @relation(fields: [contestId], references: [id], onDelete: Cascade)
 
   @@unique([contestId, userId])
   @@index([contestId])
+}
+
+model PlayerMatchStatLine {
+  id                String   @id
+  matchId           String
+  playerId          String
+  runs              Int      @default(0)
+  balls             Int      @default(0)
+  fours             Int      @default(0)
+  sixes             Int      @default(0)
+  wickets           Int      @default(0)
+  maidens           Int      @default(0)
+  dotBalls          Int      @default(0)
+  catches           Int      @default(0)
+  stumpings         Int      @default(0)
+  runOuts           Int      @default(0)
+  runsConceded      Int      @default(0)
+  ballsBowled       Int      @default(0)
+  battingStrikeRate Float?
+  bowlingEconomy    Float?
+  didPlay           Boolean  @default(false)
+  didBat            Boolean  @default(false)
+  didBowl           Boolean  @default(false)
+  didField          Boolean  @default(false)
+  sourceUpdatedAt   DateTime @default(now())
+
+  @@unique([matchId, playerId])
+  @@index([matchId])
+  @@index([playerId])
 }
 
 model FantasyScoreEvent {
@@ -296,4 +330,139 @@ model ProviderState {
   status          String
   syncedAt        DateTime
   lastAttemptedAt DateTime @default(now())
+  requestDayKey   String   @default("")
+  dailyRequestCount Int    @default(0)
+  blockedUntil    DateTime?
+}
+
+model AuctionRoom {
+  id                  String               @id
+  leagueId            String?
+  name                String
+  visibility          String
+  hostUserId          String
+  state               String
+  inviteCode          String?              @unique
+  maxParticipants     Int
+  squadSize           Int
+  purseLakhs          Int                  @default(10000)
+  basePriceLakhs      Int                  @default(25)
+  bidWindowSeconds    Int
+  bidExtensionSeconds Int                  @default(5)
+  maxOverseas         Int                  @default(6)
+  playerPoolMode      String
+  currentPoolEntryId  String?
+  currentBidLakhs     Int?
+  currentLeaderUserId String?
+  lotOpenedAt         DateTime?
+  lotEndsAt           DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  startedAt           DateTime?
+  completedAt         DateTime?
+  league              League?              @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  host                User                 @relation("HostedAuctionRooms", fields: [hostUserId], references: [id], onDelete: Cascade)
+  participants        AuctionParticipant[]
+  poolEntries         AuctionPoolEntry[]
+  bids                AuctionBid[]
+  skipVotes           AuctionSkipVote[]
+  withdrawals         AuctionWithdrawal[]
+  events              AuctionEventLog[]
+
+  @@index([state])
+  @@index([visibility, state])
+  @@index([hostUserId])
+  @@index([leagueId])
+}
+
+model AuctionParticipant {
+  roomId              String
+  userId              String
+  ready               Boolean    @default(false)
+  joinedAt            DateTime   @default(now())
+  purseRemainingLakhs Int
+  slotsRemaining      Int
+  overseasCount       Int        @default(0)
+  room                AuctionRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user                User       @relation("AuctionParticipants", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([roomId, userId])
+  @@index([userId])
+}
+
+model AuctionPoolEntry {
+  id             String        @id
+  roomId         String
+  playerId       String
+  nominationOrder Int
+  state          String
+  soldToUserId   String?
+  soldPriceLakhs Int?
+  nominatedAt    DateTime?
+  closedAt       DateTime?
+  room           AuctionRoom   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  player         Player        @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  soldTo         User?         @relation("AuctionPoolSoldTo", fields: [soldToUserId], references: [id], onDelete: SetNull)
+  bids           AuctionBid[]
+  skipVotes      AuctionSkipVote[]
+  withdrawals    AuctionWithdrawal[]
+
+  @@unique([roomId, playerId])
+  @@unique([roomId, nominationOrder])
+  @@index([roomId, state])
+}
+
+model AuctionBid {
+  id          String         @id
+  roomId      String
+  poolEntryId String
+  userId      String
+  amountLakhs Int
+  createdAt   DateTime       @default(now())
+  room        AuctionRoom    @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  poolEntry   AuctionPoolEntry @relation(fields: [poolEntryId], references: [id], onDelete: Cascade)
+  user        User           @relation("AuctionBids", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([roomId, createdAt])
+  @@index([poolEntryId, createdAt])
+}
+
+model AuctionSkipVote {
+  roomId      String
+  poolEntryId String
+  userId      String
+  createdAt   DateTime         @default(now())
+  room        AuctionRoom      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  poolEntry   AuctionPoolEntry @relation(fields: [poolEntryId], references: [id], onDelete: Cascade)
+  user        User             @relation("AuctionSkipVotes", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([poolEntryId, userId])
+  @@index([roomId])
+}
+
+model AuctionWithdrawal {
+  roomId      String
+  poolEntryId String
+  userId      String
+  createdAt   DateTime         @default(now())
+  room        AuctionRoom      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  poolEntry   AuctionPoolEntry @relation(fields: [poolEntryId], references: [id], onDelete: Cascade)
+  user        User             @relation("AuctionWithdrawals", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([poolEntryId, userId])
+  @@index([roomId])
+}
+
+model AuctionEventLog {
+  id          String      @id
+  roomId      String
+  actorUserId String?
+  type        String
+  message     String
+  payload     Json
+  createdAt   DateTime    @default(now())
+  room        AuctionRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  actor       User?       @relation("AuctionEvents", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([roomId, createdAt])
 }

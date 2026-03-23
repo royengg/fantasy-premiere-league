@@ -30,21 +30,21 @@ export function PredictionView({ questions, answers, streak, teams, onAnswer }: 
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 sm:space-y-8">
       <div 
-        className="card p-6"
+        className="card p-4 sm:p-6"
         style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30 0L60 30L30 60L0 30z' fill='%2322c55e' fill-opacity='0.02'/%3E%3C/svg%3E\")" }}
       >
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <div className="flex items-center gap-2 mb-2">
               <Target className="w-5 h-5 text-accent" />
               <span className="text-xs font-bold uppercase tracking-widest text-accent">Predictions</span>
             </div>
-            <h2 className="text-2xl font-bold">Match Predictions</h2>
+            <h2 className="text-xl font-bold sm:text-2xl">Match Predictions</h2>
             <p className="text-text-muted text-sm mt-1">Answer correctly to earn XP and unlock rewards.</p>
           </div>
-          <div className="flex gap-3">
+          <div className="grid grid-cols-2 gap-3 sm:flex">
             <div className="stat-block">
               <Flame className="w-5 h-5 text-accent mb-1" />
               <span className="stat-value text-accent">{streak}</span>
@@ -68,7 +68,7 @@ export function PredictionView({ questions, answers, streak, teams, onAnswer }: 
           <p className="text-text-muted">Check back closer to matchday.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {questions.map(q => {
             const answer = answers.find(a => a.questionId === q.id);
             const answered = !!answer;

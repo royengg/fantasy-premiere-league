@@ -1,4 +1,5 @@
 import { defaultRosterRules, normalizeIplTeam } from "@fantasy-cricket/domain";
+import { createFantasyScoreEventsFromStatLines } from "@fantasy-cricket/scoring";
 import type {
   Contest,
   CricketDataMatch,
@@ -8,6 +9,7 @@ import type {
   FantasyScoreEvent,
   Match,
   Player,
+  PlayerMatchStatLine,
   PredictionQuestion,
   Team
 } from "@fantasy-cricket/types";
@@ -20,12 +22,12 @@ const MATCH_PREFIX = `${PROVIDER_PREFIX}:match:`;
 const PLAYER_PREFIX = `${PROVIDER_PREFIX}:player:`;
 const QUESTION_PREFIX = `${PROVIDER_PREFIX}:question:`;
 const SCORE_EVENT_PREFIX = `${PROVIDER_PREFIX}:score:`;
+const STAT_LINE_PREFIX = `${PROVIDER_PREFIX}:statline:`;
 const TEAM_PREFIX = `${PROVIDER_PREFIX}:team:`;
 const FIXTURE_SYNC_WINDOW_DAYS = 30;
 const SQUAD_LOOKAHEAD_HOURS = 72;
 const RECENT_COMPLETED_DAYS = 2;
 const RECENT_SCORECARD_LOOKBACK_HOURS = 48;
-const DEFAULT_SALARY_CAP = 100;
 
 export interface ProviderSyncGateway {
   getIPLMatches: (season?: number) => Promise<CricketDataMatch[]>;
@@ -37,6 +39,7 @@ export interface ProviderSyncSnapshot {
   contests: Contest[];
   matches: Match[];
   players: Player[];
+  statLines: PlayerMatchStatLine[];
   questions: PredictionQuestion[];
   scoreEvents: FantasyScoreEvent[];
   syncedAt: string;
@@ -47,11 +50,18 @@ export interface ProviderSyncResult {
   contests: number;
   matches: number;
   players: number;
+  statLines: number;
   questions: number;
   scoreEvents: number;
   status: "ready";
   syncedAt: string;
   teams: number;
+}
+
+export interface ProviderSyncBuildOptions {
+  maxProviderRequests?: number;
+  maxSquadRequests?: number;
+  squadFetchMode?: "window" | "cover-all-upcoming-teams";
 }
 
 function providerId(prefix: string, remoteId: string) {
@@ -61,15 +71,6 @@ function providerId(prefix: string, remoteId: string) {
 function inferNationality(player: CricketDataPlayer): Player["nationality"] {
   const country = player.country?.trim().toLowerCase();
   return country === "india" ? "indian-capped" : "overseas";
-}
-
-function inferCredits(player: CricketDataPlayer) {
-  if (typeof player.credits === "number" && Number.isFinite(player.credits)) {
-    return player.credits;
-  }
-
-  const selectionPercent = player.selection_percent ?? 0;
-  return Math.min(10, Math.max(6.5, Number((7 + selectionPercent / 20).toFixed(1))));
 }
 
 function inferRating(player: CricketDataPlayer) {
@@ -160,6 +161,35 @@ function shouldFetchScorecard(match: CricketDataMatch, now = Date.now()) {
   return false;
 }
 
+function compareSyncPriority(left: CricketDataMatch, right: CricketDataMatch) {
+  const statusPriority = (match: CricketDataMatch) => {
+    switch (match.status) {
+      case "live":
+        return 0;
+      case "upcoming":
+        return 1;
+      case "completed":
+        return 2;
+      default:
+        return 3;
+    }
+  };
+
+  const leftPriority = statusPriority(left);
+  const rightPriority = statusPriority(right);
+  if (leftPriority !== rightPriority) {
+    return leftPriority - rightPriority;
+  }
+
+  const leftStartsAt = new Date(left.start_time).getTime();
+  const rightStartsAt = new Date(right.start_time).getTime();
+  if (left.status === "completed" && right.status === "completed") {
+    return rightStartsAt - leftStartsAt;
+  }
+
+  return leftStartsAt - rightStartsAt;
+}
+
 function createContest(match: Match, source: CricketDataMatch): Contest {
   const homeTeam = normalizeIplTeam({
     id: providerId(TEAM_PREFIX, source.home_team.id),
@@ -179,13 +209,7 @@ function createContest(match: Match, source: CricketDataMatch): Contest {
     name: `${homeTeam.name} vs ${awayTeam.name}`,
     kind: "public",
     matchId: match.id,
-    salaryCap: DEFAULT_SALARY_CAP,
     rosterRules: defaultRosterRules,
-    iplRules: {
-      maxPlayersPerTeam: 7,
-      allowImpactPlayer: true,
-      uncappedBonusPoints: 10
-    },
     lockTime: match.startsAt,
     rewards: []
   };
@@ -233,59 +257,276 @@ function createWinnerQuestion(match: Match, source: CricketDataMatch): Predictio
   };
 }
 
-function scoreEventsFromScorecard(matchId: string, scorecard: CricketDataScorecard): FantasyScoreEvent[] {
-  const battingRuns = new Map<string, number>();
-  const bowlingWickets = new Map<string, number>();
+function normalizePlayerNameKey(name: string) {
+  return name
+    .toLowerCase()
+    .replace(/\(.*?\)/g, " ")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function splitFielderNames(value: string) {
+  return value
+    .replace(/\band\b/gi, ",")
+    .replace(/[\/&]/g, ",")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function oversToBalls(overs: number) {
+  const wholeOvers = Math.trunc(overs);
+  const partialBalls = Math.round((overs - wholeOvers) * 10);
+  return wholeOvers * 6 + partialBalls;
+}
+
+function ensurePlayerIdEntry(
+  index: Map<string, Set<string>>,
+  name: string | undefined,
+  playerId: string | undefined
+) {
+  if (!name || !playerId) {
+    return;
+  }
+
+  const key = normalizePlayerNameKey(name);
+  if (!key) {
+    return;
+  }
+
+  const current = index.get(key) ?? new Set<string>();
+  current.add(playerId);
+  index.set(key, current);
+}
+
+function resolveNamedPlayerIds(index: Map<string, Set<string>>, rawName?: string) {
+  if (!rawName) {
+    return [] as string[];
+  }
+
+  const resolvedIds = new Set<string>();
+  for (const candidate of splitFielderNames(rawName)) {
+    const ids = index.get(normalizePlayerNameKey(candidate));
+    if (!ids) {
+      continue;
+    }
+
+    for (const id of ids) {
+      resolvedIds.add(id);
+    }
+  }
+
+  return [...resolvedIds];
+}
+
+function createEmptyStatLine(matchId: string, playerId: string): PlayerMatchStatLine {
+  return {
+    id: providerId(STAT_LINE_PREFIX, `${matchId}:${playerId}`),
+    matchId,
+    playerId,
+    runs: 0,
+    balls: 0,
+    fours: 0,
+    sixes: 0,
+    wickets: 0,
+    maidens: 0,
+    dotBalls: 0,
+    catches: 0,
+    stumpings: 0,
+    runOuts: 0,
+    runsConceded: 0,
+    ballsBowled: 0,
+    battingStrikeRate: undefined,
+    bowlingEconomy: undefined,
+    didPlay: false,
+    didBat: false,
+    didBowl: false,
+    didField: false,
+    sourceUpdatedAt: new Date().toISOString()
+  };
+}
+
+function getStatLine(
+  lines: Map<string, PlayerMatchStatLine>,
+  matchId: string,
+  playerId: string
+) {
+  const current = lines.get(playerId);
+  if (current) {
+    return current;
+  }
+
+  const next = createEmptyStatLine(matchId, playerId);
+  lines.set(playerId, next);
+  return next;
+}
+
+function buildMatchPlayerNameIndex(
+  squads: CricketDataSquad[],
+  scorecard: CricketDataScorecard
+) {
+  const index = new Map<string, Set<string>>();
+
+  for (const squad of squads) {
+    for (const player of squad.players) {
+      ensurePlayerIdEntry(index, player.name, providerId(PLAYER_PREFIX, player.id));
+      ensurePlayerIdEntry(index, player.short_name, providerId(PLAYER_PREFIX, player.id));
+    }
+  }
 
   for (const innings of scorecard.innings) {
     for (const batting of innings.batting) {
-      battingRuns.set(
-        batting.player_id,
-        (battingRuns.get(batting.player_id) ?? 0) + batting.runs
-      );
+      ensurePlayerIdEntry(index, batting.player_name, providerId(PLAYER_PREFIX, batting.player_id));
     }
 
     for (const bowling of innings.bowling) {
-      bowlingWickets.set(
-        bowling.player_id,
-        (bowlingWickets.get(bowling.player_id) ?? 0) + bowling.wickets
-      );
+      ensurePlayerIdEntry(index, bowling.player_name, providerId(PLAYER_PREFIX, bowling.player_id));
     }
   }
 
-  const events: FantasyScoreEvent[] = [];
+  return index;
+}
 
-  for (const [playerId, runs] of battingRuns) {
-    if (runs <= 0) {
-      continue;
+function awardFieldingDismissal(
+  lines: Map<string, PlayerMatchStatLine>,
+  matchId: string,
+  dismissal: string,
+  fielderIds: string[],
+  bowlerIds: string[]
+) {
+  const normalizedDismissal = dismissal.toLowerCase();
+  const isStumping =
+    normalizedDismissal.includes("stumped") || /^st[\s.]/.test(normalizedDismissal);
+  const isRunOut = normalizedDismissal.includes("run out");
+  const isCaughtAndBowled =
+    normalizedDismissal.includes("caught and bowled") ||
+    normalizedDismissal.includes("c&b") ||
+    normalizedDismissal.includes("c and b");
+  const isCaught =
+    normalizedDismissal.includes("caught") || /^c[\s.]/.test(normalizedDismissal);
+
+  if (isStumping) {
+    const keeperId = fielderIds[0];
+    if (!keeperId) {
+      return;
     }
 
-    events.push({
-      id: providerId(SCORE_EVENT_PREFIX, `${matchId}:bat:${playerId}`),
-      matchId,
-      playerId: providerId(PLAYER_PREFIX, playerId),
-      label: "Batting Runs",
-      points: runs,
-      createdAt: new Date().toISOString()
-    });
+    const line = getStatLine(lines, matchId, keeperId);
+    line.stumpings += 1;
+    line.didField = true;
+    line.didPlay = true;
+    return;
   }
 
-  for (const [playerId, wickets] of bowlingWickets) {
-    if (wickets <= 0) {
-      continue;
+  if (isRunOut) {
+    const fielderId = fielderIds[0];
+    if (!fielderId) {
+      return;
     }
 
-    events.push({
-      id: providerId(SCORE_EVENT_PREFIX, `${matchId}:bowl:${playerId}`),
-      matchId,
-      playerId: providerId(PLAYER_PREFIX, playerId),
-      label: "Wickets",
-      points: wickets * 25,
-      createdAt: new Date().toISOString()
-    });
+    const line = getStatLine(lines, matchId, fielderId);
+    line.runOuts += 1;
+    line.didField = true;
+    line.didPlay = true;
+    return;
   }
 
-  return events;
+  if (isCaughtAndBowled) {
+    const fielderId = fielderIds[0] ?? bowlerIds[0];
+    if (!fielderId) {
+      return;
+    }
+
+    const line = getStatLine(lines, matchId, fielderId);
+    line.catches += 1;
+    line.didField = true;
+    line.didPlay = true;
+    return;
+  }
+
+  if (isCaught) {
+    const fielderId = fielderIds[0];
+    if (!fielderId) {
+      return;
+    }
+
+    const line = getStatLine(lines, matchId, fielderId);
+    line.catches += 1;
+    line.didField = true;
+    line.didPlay = true;
+  }
+}
+
+export function createPlayerMatchStatLinesFromScorecard(
+  matchId: string,
+  scorecard: CricketDataScorecard,
+  squads: CricketDataSquad[] = [],
+  sourceUpdatedAt = new Date().toISOString()
+): PlayerMatchStatLine[] {
+  const lines = new Map<string, PlayerMatchStatLine>();
+  const playerNameIndex = buildMatchPlayerNameIndex(squads, scorecard);
+
+  for (const innings of scorecard.innings) {
+    for (const batting of innings.batting) {
+      const playerId = providerId(PLAYER_PREFIX, batting.player_id);
+      const line = getStatLine(lines, matchId, playerId);
+      line.runs += batting.runs;
+      line.balls += batting.balls;
+      line.fours += batting.fours;
+      line.sixes += batting.sixes;
+      line.didPlay = true;
+      line.didBat = true;
+
+      if (batting.out && batting.dismissal) {
+        awardFieldingDismissal(
+          lines,
+          matchId,
+          batting.dismissal,
+          resolveNamedPlayerIds(playerNameIndex, batting.fielder),
+          resolveNamedPlayerIds(playerNameIndex, batting.bowler)
+        );
+      }
+    }
+
+    for (const bowling of innings.bowling) {
+      const playerId = providerId(PLAYER_PREFIX, bowling.player_id);
+      const line = getStatLine(lines, matchId, playerId);
+      line.wickets += bowling.wickets;
+      line.maidens += bowling.maidens;
+      line.dotBalls += bowling.dots;
+      line.runsConceded += bowling.runs;
+      line.ballsBowled += oversToBalls(bowling.overs);
+      line.didPlay = true;
+      line.didBowl = true;
+    }
+  }
+
+  return [...lines.values()].map((line) => ({
+    ...line,
+    battingStrikeRate: line.balls > 0 ? Number(((line.runs / line.balls) * 100).toFixed(2)) : undefined,
+    bowlingEconomy:
+      line.ballsBowled > 0
+        ? Number(((line.runsConceded * 6) / line.ballsBowled).toFixed(2))
+        : undefined,
+    sourceUpdatedAt
+  }));
+}
+
+function providerScoreEventsFromStatLines(
+  statLines: PlayerMatchStatLine[],
+  createdAt: string
+): FantasyScoreEvent[] {
+  return createFantasyScoreEventsFromStatLines(statLines, createdAt).map((event) => ({
+    ...event,
+    id: providerId(
+      SCORE_EVENT_PREFIX,
+      `${event.matchId}:${event.playerId}:${event.label
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")}`
+    )
+  }));
 }
 
 async function loadScorecard(gateway: ProviderSyncGateway, matchId: string) {
@@ -300,26 +541,99 @@ export function isProviderManagedId(id: string) {
   return id.startsWith(`${PROVIDER_PREFIX}:`);
 }
 
+export function selectMatchesForSquadSync(
+  providerMatches: CricketDataMatch[],
+  now = Date.now(),
+  mode: NonNullable<ProviderSyncBuildOptions["squadFetchMode"]> = "window",
+  maxSquadRequests = Number.POSITIVE_INFINITY
+) {
+  if (maxSquadRequests <= 0) {
+    return [] as CricketDataMatch[];
+  }
+
+  if (mode === "cover-all-upcoming-teams") {
+    const candidates = providerMatches
+      .filter((match) => match.status === "live" || match.status === "upcoming")
+      .sort(compareSyncPriority);
+    const expectedTeamIds = new Set(
+      candidates.flatMap((match) => [match.home_team.id, match.away_team.id])
+    );
+    const coveredTeamIds = new Set<string>();
+    const selected: CricketDataMatch[] = [];
+
+    for (const match of candidates) {
+      if (selected.length >= maxSquadRequests) {
+        break;
+      }
+
+      const teamIds = [match.home_team.id, match.away_team.id];
+      if (teamIds.every((teamId) => coveredTeamIds.has(teamId))) {
+        continue;
+      }
+
+      selected.push(match);
+      for (const teamId of teamIds) {
+        coveredTeamIds.add(teamId);
+      }
+
+      if (coveredTeamIds.size >= expectedTeamIds.size) {
+        break;
+      }
+    }
+
+    return selected;
+  }
+
+  return [...providerMatches]
+    .sort(compareSyncPriority)
+    .filter((match) => shouldFetchSquads(match, now))
+    .slice(0, maxSquadRequests);
+}
+
 export async function buildProviderSyncSnapshot(
   gateway: ProviderSyncGateway = cricketDataService,
-  season = new Date().getFullYear()
+  season = new Date().getFullYear(),
+  options: ProviderSyncBuildOptions = {}
 ): Promise<ProviderSyncSnapshot> {
   const now = Date.now();
+  const syncedAt = new Date().toISOString();
+  const maxProviderRequests = Math.max(options.maxProviderRequests ?? Number.POSITIVE_INFINITY, 0);
+  const providerFollowUpBudget = Number.isFinite(maxProviderRequests)
+    ? Math.max(maxProviderRequests - 2, 0)
+    : Number.POSITIVE_INFINITY;
+  const maxSquadRequests = Number.isFinite(options.maxSquadRequests ?? Number.POSITIVE_INFINITY)
+    ? Math.min(
+        Math.max(options.maxSquadRequests ?? Number.POSITIVE_INFINITY, 0),
+        providerFollowUpBudget
+      )
+    : providerFollowUpBudget;
+  let remainingFollowUpRequests = Number.isFinite(maxProviderRequests)
+    ? Math.max(maxProviderRequests - 2, 0)
+    : Number.POSITIVE_INFINITY;
   const providerMatches = (await gateway.getIPLMatches(season))
     .filter((match) => shouldIncludeMatch(match, now))
     .sort(
       (left, right) =>
         new Date(left.start_time).getTime() - new Date(right.start_time).getTime()
     );
+  const prioritizedMatches = [...providerMatches].sort(compareSyncPriority);
 
   const squadMap = new Map<string, CricketDataSquad[]>();
-  for (const match of providerMatches) {
-    if (!shouldFetchSquads(match, now)) {
-      continue;
+  for (const match of selectMatchesForSquadSync(
+    providerMatches,
+    now,
+    options.squadFetchMode ?? "window",
+    maxSquadRequests
+  )) {
+    if (remainingFollowUpRequests <= 0) {
+      break;
     }
 
     const squads = await gateway.getMatchSquad(match.id).catch(() => [] as CricketDataSquad[]);
     squadMap.set(match.id, squads);
+    if (Number.isFinite(remainingFollowUpRequests)) {
+      remainingFollowUpRequests -= 1;
+    }
   }
 
   const teamMap = new Map<string, Team>();
@@ -327,6 +641,7 @@ export async function buildProviderSyncSnapshot(
   const matches: Match[] = [];
   const contests: Contest[] = [];
   const questions: PredictionQuestion[] = [];
+  const statLines: PlayerMatchStatLine[] = [];
   const scoreEvents: FantasyScoreEvent[] = [];
 
   for (const sourceMatch of providerMatches) {
@@ -379,7 +694,6 @@ export async function buildProviderSyncSnapshot(
           name: sourcePlayer.name,
           teamId,
           role: sourcePlayer.role,
-          credits: inferCredits(sourcePlayer),
           rating: inferRating(sourcePlayer),
           nationality: inferNationality(sourcePlayer),
           selectionPercent: sourcePlayer.selection_percent ?? 0
@@ -401,25 +715,37 @@ export async function buildProviderSyncSnapshot(
       continue;
     }
 
+    if (remainingFollowUpRequests <= 0) {
+      continue;
+    }
+
+    if (Number.isFinite(remainingFollowUpRequests)) {
+      remainingFollowUpRequests -= 1;
+    }
     const scorecard = await loadScorecard(gateway, sourceMatch.id);
     if (!scorecard) {
       continue;
     }
 
-    scoreEvents.push(
-      ...scoreEventsFromScorecard(match.id, scorecard).filter((event) =>
-        playerMap.has(event.playerId)
-      )
-    );
+    const matchStatLines = createPlayerMatchStatLinesFromScorecard(
+      match.id,
+      scorecard,
+      squads,
+      syncedAt
+    ).filter((line) => playerMap.has(line.playerId));
+
+    statLines.push(...matchStatLines);
+    scoreEvents.push(...providerScoreEventsFromStatLines(matchStatLines, syncedAt));
   }
 
   return {
     contests,
     matches,
     players: [...playerMap.values()],
+    statLines,
     questions,
     scoreEvents,
-    syncedAt: new Date().toISOString(),
+    syncedAt,
     teams: [...teamMap.values()]
   };
 }
@@ -433,6 +759,7 @@ export function providerSyncResult(snapshot: ProviderSyncSnapshot): ProviderSync
     matches: snapshot.matches.length,
     contests: snapshot.contests.length,
     questions: snapshot.questions.length,
+    statLines: snapshot.statLines.length,
     scoreEvents: snapshot.scoreEvents.length
   };
 }

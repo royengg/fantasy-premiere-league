@@ -10,6 +10,7 @@ export interface RealtimeHub {
   emitLeaderboard: (userIds: string[], contestId: string, leaderboard: LeaderboardEntry[]) => void;
   emitLeagueActivity: (userIds: string[], leagueId: string, message: string) => void;
   emitUserRefresh: (userIds: string[], reason: string) => void;
+  emitAuctionRoomsRefresh: () => void;
 }
 
 function tokenFromHandshake(socket: { handshake: { auth: Record<string, unknown>; headers: Record<string, unknown> } }) {
@@ -62,6 +63,7 @@ export function createRealtimeHub(
   io.on("connection", (socket) => {
     const userId = socket.data.userId as string | undefined;
     if (userId) {
+      socket.join("authenticated");
       socket.join(`user:${userId}`);
     }
   });
@@ -81,6 +83,11 @@ export function createRealtimeHub(
     },
     emitUserRefresh: (userIds, reason) => {
       emitToUsers(userIds, "user:refresh", { reason, timestamp: new Date().toISOString() });
+    },
+    emitAuctionRoomsRefresh: () => {
+      io.to("authenticated").emit("auction:rooms", {
+        timestamp: new Date().toISOString()
+      });
     }
   };
 }

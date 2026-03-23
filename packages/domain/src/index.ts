@@ -10,14 +10,16 @@ import type {
   Profile,
   RosterRules,
   RosterValidationResult,
-  UserInventory,
-  PlayerNationality
+  UserInventory
 } from "@fantasy-cricket/types";
 
 export * from "./ipl-teams";
+export * from "./auction";
 
 export const defaultRosterRules: RosterRules = {
-  totalPlayers: 11,
+  startingPlayers: 11,
+  substitutePlayers: 2,
+  totalPlayers: 13,
   minByRole: {
     WK: 1,
     BAT: 3,
@@ -43,6 +45,7 @@ export function validateRoster(
   const errors: string[] = [];
   const warnings: string[] = [];
   const lockTime = new Date(contest.lockTime);
+  const combinedPlayerIds = [...input.starterPlayerIds, ...input.substitutePlayerIds];
 
   if (now >= lockTime) {
     errors.push("This contest is locked.");
@@ -52,20 +55,25 @@ export function validateRoster(
     errors.push("This match is not open for roster changes.");
   }
 
-  const selected = players.filter((player) => input.playerIds.includes(player.id));
-  const seenIds = new Set(input.playerIds);
+  const selected = players.filter((player) => combinedPlayerIds.includes(player.id));
+  const selectedStarters = players.filter((player) => input.starterPlayerIds.includes(player.id));
+  const selectedSubstitutes = players.filter((player) => input.substitutePlayerIds.includes(player.id));
+  const seenIds = new Set(combinedPlayerIds);
+
+  if (input.starterPlayerIds.length !== contest.rosterRules.startingPlayers) {
+    errors.push(`Select exactly ${contest.rosterRules.startingPlayers} starters.`);
+  }
+
+  if (input.substitutePlayerIds.length !== contest.rosterRules.substitutePlayers) {
+    errors.push(`Select exactly ${contest.rosterRules.substitutePlayers} substitutes.`);
+  }
 
   if (seenIds.size !== contest.rosterRules.totalPlayers) {
-    errors.push("Select exactly 11 unique players.");
+    errors.push(`Select exactly ${contest.rosterRules.totalPlayers} unique players.`);
   }
 
   if (selected.length !== contest.rosterRules.totalPlayers) {
     errors.push("Some selected players are unavailable.");
-  }
-
-  const totalCredits = selected.reduce((sum, player) => sum + player.credits, 0);
-  if (totalCredits > contest.salaryCap) {
-    errors.push(`Roster exceeds the salary cap of ${contest.salaryCap}.`);
   }
 
   for (const [role, minimum] of Object.entries(contest.rosterRules.minByRole)) {
@@ -88,38 +96,36 @@ export function validateRoster(
   }
 
   for (const [teamId, count] of Object.entries(teamCount)) {
-    if (count > contest.iplRules.maxPlayersPerTeam) {
-      errors.push(`Maximum ${contest.iplRules.maxPlayersPerTeam} players allowed from one team.`);
+    if (count > contest.rosterRules.maxPerTeam) {
+      errors.push(`Maximum ${contest.rosterRules.maxPerTeam} players allowed from one team.`);
     }
   }
 
-  if (!input.playerIds.includes(input.captainPlayerId)) {
-    errors.push("Captain must be selected in the roster.");
+  if (!input.starterPlayerIds.includes(input.captainPlayerId)) {
+    errors.push("Captain must be selected in the starting XI.");
   }
 
-  if (!input.playerIds.includes(input.viceCaptainPlayerId)) {
-    errors.push("Vice captain must be selected in the roster.");
+  if (!input.starterPlayerIds.includes(input.viceCaptainPlayerId)) {
+    errors.push("Vice captain must be selected in the starting XI.");
   }
 
   if (input.captainPlayerId === input.viceCaptainPlayerId) {
     errors.push("Captain and vice captain must be different players.");
   }
 
-  const hasUncappedPlayer = selected.some(
-    (p) => (p as Player & { nationality?: PlayerNationality }).nationality === "indian-uncapped"
-  );
+  if (selectedStarters.length !== contest.rosterRules.startingPlayers) {
+    errors.push("Some selected starters are unavailable.");
+  }
 
-  if (!hasUncappedPlayer) {
-    warnings.push("Consider selecting an uncapped player for bonus points.");
+  if (selectedSubstitutes.length !== contest.rosterRules.substitutePlayers) {
+    errors.push("Some selected substitutes are unavailable.");
   }
 
   return {
     valid: errors.length === 0,
-    totalCredits,
     errors,
     warnings,
-    teamCount,
-    hasUncappedPlayer
+    teamCount
   };
 }
 

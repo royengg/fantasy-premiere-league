@@ -1,151 +1,315 @@
-import { useState } from "react";
-import { Plus, UserPlus, Users, Trophy, Copy, Check, Hash } from "lucide-react";
+import { useMemo, useState } from "react";
+import { ArrowRight, Globe2, Plus, Trophy, Users } from "lucide-react";
+
 import type { League } from "@fantasy-cricket/types";
 
 interface LeagueViewProps {
+  currentUserId: string;
   leagues: League[];
-  onCreate: (payload: { name: string; description?: string; visibility: "public" | "private" }) => Promise<unknown>;
-  onJoin: (inviteCode: string) => Promise<unknown>;
+  onCreate: (payload: {
+    name: string;
+    description?: string;
+    visibility: "public" | "private";
+    maxMembers: number;
+  }) => Promise<League>;
+  onJoin: (inviteCode: string) => Promise<League>;
+  onOpenLeague: (leagueId: string) => void;
 }
 
-export function LeagueView({ leagues, onCreate, onJoin }: LeagueViewProps) {
+export function LeagueView({
+  currentUserId,
+  leagues,
+  onCreate,
+  onJoin,
+  onOpenLeague
+}: LeagueViewProps) {
   const [name, setName] = useState("");
-  const [desc, setDesc] = useState("");
-  const [code, setCode] = useState("");
-  const [status, setStatus] = useState<{ msg: string; ok: boolean } | null>(null);
-  const [copied, setCopied] = useState<string | null>(null);
+  const [description, setDescription] = useState("");
+  const [visibility, setVisibility] = useState<"public" | "private">("private");
+  const [maxMembers, setMaxMembers] = useState(8);
+  const [inviteCode, setInviteCode] = useState("");
+  const [status, setStatus] = useState<{ ok: boolean; message: string } | null>(null);
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const publicLeagues = useMemo(
+    () => leagues.filter((league) => league.visibility === "public"),
+    [leagues]
+  );
+  const privateLeagues = useMemo(
+    () =>
+      leagues.filter(
+        (league) => league.visibility === "private" && league.memberIds.includes(currentUserId)
+      ),
+    [currentUserId, leagues]
+  );
+
+  const handleCreate = async (event: React.FormEvent) => {
+    event.preventDefault();
     setStatus(null);
+
     try {
-      await onCreate({ name, description: desc, visibility: "private" });
+      const league = await onCreate({
+        name: name.trim(),
+        description: description.trim() || undefined,
+        visibility,
+        maxMembers
+      });
       setName("");
-      setDesc("");
-      setStatus({ msg: "Created!", ok: true });
-    } catch (err) {
-      setStatus({ msg: err instanceof Error ? err.message : "Failed", ok: false });
+      setDescription("");
+      setVisibility("private");
+      setMaxMembers(8);
+      onOpenLeague(league.id);
+    } catch (error) {
+      setStatus({
+        ok: false,
+        message: error instanceof Error ? error.message : "Could not create league."
+      });
     }
   };
 
-  const handleJoin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleJoin = async (event: React.FormEvent) => {
+    event.preventDefault();
     setStatus(null);
-    try {
-      await onJoin(code);
-      setCode("");
-      setStatus({ msg: "Joined!", ok: true });
-    } catch (err) {
-      setStatus({ msg: err instanceof Error ? err.message : "Failed", ok: false });
-    }
-  };
 
-  const copyCode = (c: string) => {
-    navigator.clipboard.writeText(c);
-    setCopied(c);
-    setTimeout(() => setCopied(null), 2000);
+    try {
+      const league = await onJoin(inviteCode.trim().toUpperCase());
+      setInviteCode("");
+      onOpenLeague(league.id);
+    } catch (error) {
+      setStatus({
+        ok: false,
+        message: error instanceof Error ? error.message : "Could not join private league."
+      });
+    }
   };
 
   return (
-    <div className="space-y-8">
-      <div 
-        className="card p-6"
-        style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30 0L60 30L30 60L0 30z' fill='%2322c55e' fill-opacity='0.02'/%3E%3C/svg%3E\")" }}
-      >
-        <div className="flex items-center gap-2 mb-2">
-          <Trophy className="w-5 h-5 text-accent" />
-          <span className="text-xs font-bold uppercase tracking-widest text-accent">Social</span>
+    <div className="space-y-6 sm:space-y-8">
+      <div className="card p-5 sm:p-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <div className="mb-2 flex items-center gap-2">
+              <Trophy className="h-5 w-5 text-accent" />
+              <span className="text-xs font-bold uppercase tracking-widest text-accent">
+                League Hub
+              </span>
+            </div>
+            <h2 className="text-2xl font-bold sm:text-3xl">Leagues</h2>
+            <p className="mt-2 max-w-2xl text-sm text-text-muted">
+              Browse public season leagues or spin up a private room with friends. Private leagues
+              jump straight into a waiting lobby and start their auction automatically when every
+              joined manager is ready.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 sm:flex">
+            <LeagueMetric label="Public" value={`${publicLeagues.length}`} />
+            <LeagueMetric label="Private" value={`${privateLeagues.length}`} />
+          </div>
         </div>
-        <h2 className="text-2xl font-bold">Friend Leagues</h2>
-        <p className="text-text-muted text-sm mt-1">Create private leagues and compete with your friends.</p>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-4">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-text-muted flex items-center gap-2">
-            <Users className="w-4 h-4" />Your Leagues
-          </h3>
-          
-          {leagues.length === 0 ? (
-            <div className="card p-8 text-center">
-              <div className="w-16 h-16 rounded-full bg-white/5 border border-border flex items-center justify-center mx-auto mb-4">
-                <Users className="w-8 h-8 text-text-muted/50" />
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+        <section className="card p-5 sm:p-6">
+          <div className="mb-5 flex items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <Globe2 className="h-4 w-4 text-accent" />
+                <h3 className="text-lg font-bold">Public Leagues</h3>
               </div>
-              <h3 className="text-lg font-bold mb-2">No Leagues Yet</h3>
-              <p className="text-text-muted text-sm">Create or join a league to get started.</p>
+              <p className="mt-1 text-sm text-text-muted">
+                Open season leagues anyone can join from the listing.
+              </p>
             </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {leagues.map(l => (
-                <div 
-                  key={l.id} 
-                  className="card p-4 hover:border-accent/30 transition-colors"
-                  style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg width='40' height='40' viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='20' cy='20' r='15' fill='none' stroke='%2322c55e' stroke-opacity='0.03' stroke-width='1'/%3E%3C/svg%3E\")" }}
+            <span className="badge">{publicLeagues.length} live</span>
+          </div>
+
+          {publicLeagues.length ? (
+            <div className="space-y-3">
+              {publicLeagues.map((league) => (
+                <button
+                  key={league.id}
+                  type="button"
+                  onClick={() => onOpenLeague(league.id)}
+                  className="w-full rounded-2xl border border-border bg-surface-elevated p-4 text-left transition-colors hover:border-accent/35"
                 >
-                  <div className="flex items-start justify-between mb-2">
+                  <div className="flex items-start justify-between gap-3">
                     <div>
-                      <h4 className="font-bold">{l.name}</h4>
-                      <p className="text-sm text-text-muted">{l.description || "No description"}</p>
+                      <div className="text-lg font-bold">{league.name}</div>
+                      <p className="mt-1 text-sm text-text-muted">
+                        {league.description || "Public season-long league with a league auction and locked squads."}
+                      </p>
                     </div>
-                    <span className="badge">{l.visibility}</span>
+                    <span className="badge">public</span>
                   </div>
-                  <div className="flex items-center justify-between pt-3 border-t border-border">
-                    <span className="text-sm text-text-muted flex items-center gap-1">
-                      <Users className="w-4 h-4 text-accent" />{l.memberIds.length} members
-                    </span>
-                    <button onClick={() => copyCode(l.inviteCode)} className="flex items-center gap-2 px-2 py-1 rounded-lg bg-surface-elevated hover:bg-surface-card transition-colors text-xs">
-                      <Hash className="w-3 h-3 text-accent" />
-                      <code className="font-mono font-bold">{l.inviteCode}</code>
-                      {copied === l.inviteCode ? <Check className="w-3 h-3 text-accent" /> : <Copy className="w-3 h-3" />}
-                    </button>
+
+                  <div className="mt-4 flex flex-wrap gap-3 text-xs text-text-muted">
+                    <span>{league.memberIds.length}/{league.maxMembers} managers</span>
+                    <span>{league.squadSize}-player squads</span>
+                    <span>{league.auctionRoomId ? "Lobby ready" : "Session opens on entry"}</span>
                   </div>
-                </div>
+
+                  <div className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-accent">
+                    Open league
+                    <ArrowRight className="h-4 w-4" />
+                  </div>
+                </button>
               ))}
             </div>
-          )}
-        </div>
-
-        <div className="space-y-4">
-          <div 
-            className="card p-5"
-            style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg width='40' height='40' viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M20 0L40 20L20 40L0 20z' fill='%2322c55e' fill-opacity='0.02'/%3E%3C/svg%3E\")" }}
-          >
-            <div className="flex items-center gap-2 mb-4">
-              <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center">
-                <Plus className="w-4 h-4 text-accent" />
-              </div>
-              <h3 className="font-bold">Create League</h3>
-            </div>
-            <form onSubmit={handleCreate} className="space-y-3">
-              <input value={name} onChange={e => setName(e.target.value)} placeholder="League name" className="w-full h-10 px-3 bg-surface border border-border rounded-xl text-sm focus:border-accent outline-none" required />
-              <input value={desc} onChange={e => setDesc(e.target.value)} placeholder="Description (optional)" className="w-full h-10 px-3 bg-surface border border-border rounded-xl text-sm focus:border-accent outline-none" />
-              <button type="submit" disabled={!name} className="btn-primary w-full">Create</button>
-            </form>
-          </div>
-
-          <div 
-            className="card p-5"
-            style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg width='40' height='40' viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='20' cy='20' r='12' fill='none' stroke='%2322c55e' stroke-opacity='0.03' stroke-width='1'/%3E%3C/svg%3E\")" }}
-          >
-            <div className="flex items-center gap-2 mb-4">
-              <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center">
-                <UserPlus className="w-4 h-4 text-accent" />
-              </div>
-              <h3 className="font-bold">Join League</h3>
-            </div>
-            <form onSubmit={handleJoin} className="space-y-3">
-              <input value={code} onChange={e => setCode(e.target.value.toUpperCase())} placeholder="Invite code" className="w-full h-10 px-3 bg-surface border border-border rounded-xl text-sm font-mono uppercase tracking-wider focus:border-accent outline-none" required />
-              <button type="submit" disabled={!code} className="btn-secondary w-full">Join</button>
-            </form>
-          </div>
-
-          {status && (
-            <div className={`p-3 rounded-xl text-sm font-medium ${status.ok ? "bg-accent/10 text-accent border border-accent/20" : "bg-red-500/10 text-red-400 border border-red-500/20"}`}>
-              {status.msg}
+          ) : (
+            <div className="rounded-2xl border border-border bg-surface-elevated p-6 text-sm text-text-muted">
+              No public leagues are listed right now.
             </div>
           )}
-        </div>
+        </section>
+
+        <section className="card p-5 sm:p-6">
+          <div className="mb-5 flex items-center gap-2">
+            <Plus className="h-4 w-4 text-accent" />
+            <h3 className="text-lg font-bold">Create League</h3>
+          </div>
+
+          <form onSubmit={handleCreate} className="space-y-4">
+            <input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="League name"
+              className="h-12 w-full rounded-2xl border border-border bg-surface px-4 text-sm outline-none focus:border-accent"
+              required
+            />
+
+            <textarea
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="Short description"
+              className="min-h-28 w-full resize-none rounded-2xl border border-border bg-surface px-4 py-3 text-sm outline-none focus:border-accent"
+            />
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="rounded-2xl border border-border bg-surface-elevated p-4">
+                <div className="mb-3 text-xs font-bold uppercase tracking-[0.16em] text-text-muted">
+                  Visibility
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {(["private", "public"] as const).map((option) => {
+                    const active = visibility === option;
+                    return (
+                      <button
+                        key={option}
+                        type="button"
+                        onClick={() => setVisibility(option)}
+                        className={`rounded-xl border px-3 py-3 text-sm font-semibold capitalize transition-colors ${
+                          active
+                            ? "border-accent bg-accent/10 text-accent"
+                            : "border-border bg-surface text-text-muted hover:border-accent/35"
+                        }`}
+                      >
+                        {option}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-border bg-surface-elevated p-4">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <span className="text-xs font-bold uppercase tracking-[0.16em] text-text-muted">
+                    Max Seats
+                  </span>
+                  <span className="text-lg font-bold text-accent">{maxMembers}</span>
+                </div>
+                <input
+                  type="range"
+                  min={2}
+                  max={15}
+                  value={maxMembers}
+                  onChange={(event) => setMaxMembers(Number(event.target.value))}
+                  className="w-full accent-[var(--accent)]"
+                />
+                <div className="mt-2 flex items-center justify-between text-xs text-text-muted">
+                  <span>2</span>
+                  <span>15</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-border bg-surface-elevated p-4 text-sm text-text-muted">
+              {visibility === "private"
+                ? "Private leagues open a party lobby right away. Share the code, fill the seats, and the auction starts automatically when every joined manager is ready."
+                : "Public leagues are listed in the open directory. Players can enter the session from the listing, fill the seats, and the auction starts automatically once the room is ready."}
+            </div>
+
+            <button type="submit" disabled={!name.trim()} className="btn-primary w-full">
+              Create {visibility} league
+            </button>
+          </form>
+
+          <div className="my-5 h-px bg-border" />
+
+          <form onSubmit={handleJoin} className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Users className="h-4 w-4 text-accent" />
+              <h4 className="font-semibold">Join with party code</h4>
+            </div>
+
+            <input
+              value={inviteCode}
+              onChange={(event) => setInviteCode(event.target.value.toUpperCase())}
+              placeholder="Invite code"
+              className="h-12 w-full rounded-2xl border border-border bg-surface px-4 text-sm font-mono uppercase tracking-[0.16em] outline-none focus:border-accent"
+              required
+            />
+
+            <button type="submit" disabled={!inviteCode.trim()} className="btn-secondary w-full">
+              Join private league
+            </button>
+          </form>
+
+          {privateLeagues.length ? (
+            <div className="mt-5 space-y-3">
+              <div className="text-xs font-bold uppercase tracking-[0.16em] text-text-muted">
+                Your private leagues
+              </div>
+              {privateLeagues.map((league) => (
+                <button
+                  key={league.id}
+                  type="button"
+                  onClick={() => onOpenLeague(league.id)}
+                  className="flex w-full items-center justify-between rounded-2xl border border-border bg-surface-elevated px-4 py-3 text-left transition-colors hover:border-accent/35"
+                >
+                  <div>
+                    <div className="font-semibold">{league.name}</div>
+                    <div className="mt-1 text-xs text-text-muted">
+                      Code {league.inviteCode} • {league.memberIds.length}/{league.maxMembers} managers
+                    </div>
+                  </div>
+                  <ArrowRight className="h-4 w-4 text-accent" />
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          {status ? (
+            <div
+              className={`mt-5 rounded-xl border p-3 text-sm ${
+                status.ok
+                  ? "border-accent/20 bg-accent/10 text-accent"
+                  : "border-red-500/20 bg-red-500/10 text-red-400"
+              }`}
+            >
+              {status.message}
+            </div>
+          ) : null}
+        </section>
       </div>
+    </div>
+  );
+}
+
+function LeagueMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="stat-block min-w-[96px]">
+      <span className="stat-value">{value}</span>
+      <span className="stat-label">{label}</span>
     </div>
   );
 }

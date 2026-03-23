@@ -3,6 +3,7 @@ import type { Request, Response } from "express";
 import type { Env } from "./env.js";
 import type { RealtimeHub } from "./socket.js";
 import type { AdminService } from "../services/admin-service.js";
+import type { AuctionService } from "../services/auction-service.js";
 import type { AuthService } from "../services/auth-service.js";
 import type { GameService } from "../services/game-service.js";
 
@@ -10,6 +11,7 @@ export interface ApiDependencies {
   env: Env;
   authService: AuthService;
   gameService: GameService;
+  auctionService: AuctionService;
   adminService: AdminService;
   realtime: RealtimeHub;
 }

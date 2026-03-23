@@ -4,12 +4,6 @@ import type { AppStore } from "./store.js";
 
 const hoursFromNow = (hours: number) => new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
 
-const defaultIplRules = {
-  maxPlayersPerTeam: 7 as const,
-  allowImpactPlayer: true,
-  uncappedBonusPoints: 10
-};
-
 export function createBootstrapStore(): AppStore {
   return {
     sessions: [],
@@ -33,20 +27,20 @@ export function createBootstrapStore(): AppStore {
       }
     ],
     players: [
-      { id: "p1", name: "Arjun Rao", teamId: "team-mi", role: "WK", credits: 9, rating: 88, nationality: "indian-capped", selectionPercent: 45 },
-      { id: "p2", name: "Neel Sharma", teamId: "team-mi", role: "BAT", credits: 9.5, rating: 93, nationality: "indian-capped", selectionPercent: 78 },
-      { id: "p3", name: "Rohan Iyer", teamId: "team-mi", role: "BAT", credits: 8.5, rating: 84, nationality: "indian-capped", selectionPercent: 52 },
-      { id: "p4", name: "Kabir Sen", teamId: "team-mi", role: "AR", credits: 9, rating: 90, nationality: "indian-capped", selectionPercent: 67 },
-      { id: "p5", name: "Dev Malhotra", teamId: "team-mi", role: "BOWL", credits: 8.5, rating: 86, nationality: "indian-capped", selectionPercent: 41 },
-      { id: "p6", name: "Vivaan Patel", teamId: "team-mi", role: "BOWL", credits: 8, rating: 81, nationality: "indian-uncapped", selectionPercent: 23 },
-      { id: "p7", name: "Ishan Batra", teamId: "team-mi", role: "AR", credits: 8.5, rating: 82, nationality: "indian-capped", selectionPercent: 38 },
-      { id: "p8", name: "Aarav Mehta", teamId: "team-csk", role: "WK", credits: 8.5, rating: 85, nationality: "indian-capped", selectionPercent: 56 },
-      { id: "p9", name: "Samar Joshi", teamId: "team-csk", role: "BAT", credits: 9, rating: 89, nationality: "indian-capped", selectionPercent: 61 },
-      { id: "p10", name: "Reyansh Kapoor", teamId: "team-csk", role: "BAT", credits: 8, rating: 80, nationality: "indian-uncapped", selectionPercent: 19 },
-      { id: "p11", name: "Kunal Desai", teamId: "team-csk", role: "AR", credits: 8.5, rating: 87, nationality: "indian-capped", selectionPercent: 44 },
-      { id: "p12", name: "Pranav Gill", teamId: "team-csk", role: "BOWL", credits: 9, rating: 91, nationality: "overseas", selectionPercent: 72 },
-      { id: "p13", name: "Tanish Ali", teamId: "team-csk", role: "BOWL", credits: 8, rating: 79, nationality: "indian-uncapped", selectionPercent: 15 },
-      { id: "p14", name: "Yuvraj Nanda", teamId: "team-csk", role: "BAT", credits: 7.5, rating: 77, nationality: "indian-uncapped", selectionPercent: 12 }
+      { id: "p1", name: "Arjun Rao", teamId: "team-mi", role: "WK", rating: 88, nationality: "indian-capped", selectionPercent: 45 },
+      { id: "p2", name: "Neel Sharma", teamId: "team-mi", role: "BAT", rating: 93, nationality: "indian-capped", selectionPercent: 78 },
+      { id: "p3", name: "Rohan Iyer", teamId: "team-mi", role: "BAT", rating: 84, nationality: "indian-capped", selectionPercent: 52 },
+      { id: "p4", name: "Kabir Sen", teamId: "team-mi", role: "AR", rating: 90, nationality: "indian-capped", selectionPercent: 67 },
+      { id: "p5", name: "Dev Malhotra", teamId: "team-mi", role: "BOWL", rating: 86, nationality: "indian-capped", selectionPercent: 41 },
+      { id: "p6", name: "Vivaan Patel", teamId: "team-mi", role: "BOWL", rating: 81, nationality: "indian-uncapped", selectionPercent: 23 },
+      { id: "p7", name: "Ishan Batra", teamId: "team-mi", role: "AR", rating: 82, nationality: "indian-capped", selectionPercent: 38 },
+      { id: "p8", name: "Aarav Mehta", teamId: "team-csk", role: "WK", rating: 85, nationality: "indian-capped", selectionPercent: 56 },
+      { id: "p9", name: "Samar Joshi", teamId: "team-csk", role: "BAT", rating: 89, nationality: "indian-capped", selectionPercent: 61 },
+      { id: "p10", name: "Reyansh Kapoor", teamId: "team-csk", role: "BAT", rating: 80, nationality: "indian-uncapped", selectionPercent: 19 },
+      { id: "p11", name: "Kunal Desai", teamId: "team-csk", role: "AR", rating: 87, nationality: "indian-capped", selectionPercent: 44 },
+      { id: "p12", name: "Pranav Gill", teamId: "team-csk", role: "BOWL", rating: 91, nationality: "overseas", selectionPercent: 72 },
+      { id: "p13", name: "Tanish Ali", teamId: "team-csk", role: "BOWL", rating: 79, nationality: "indian-uncapped", selectionPercent: 15 },
+      { id: "p14", name: "Yuvraj Nanda", teamId: "team-csk", role: "BAT", rating: 77, nationality: "indian-uncapped", selectionPercent: 12 }
     ],
     matches: [
       {
@@ -64,9 +58,7 @@ export function createBootstrapStore(): AppStore {
         name: "Mumbai Indians vs Chennai Super Kings",
         kind: "public",
         matchId: "match-1",
-        salaryCap: 100,
         rosterRules: defaultRosterRules,
-        iplRules: defaultIplRules,
         lockTime: hoursFromNow(27),
         rewards: [
           {
@@ -89,10 +81,14 @@ export function createBootstrapStore(): AppStore {
         inviteCode: "OPEN2026",
         memberIds: [],
         contestIds: ["contest-1"],
-        bannerStyle: "sunset-grid"
+        bannerStyle: "sunset-grid",
+        mode: "season",
+        maxMembers: 15,
+        squadSize: 13
       }
     ],
     rosters: [],
+    playerMatchStatLines: [],
     scoreEvents: [],
     leaderboard: [],
     questions: [
@@ -188,7 +184,9 @@ export function createBootstrapStore(): AppStore {
     provider: {
       status: "idle",
       syncedAt: new Date(0).toISOString(),
-      lastAttemptedAt: new Date(0).toISOString()
+      lastAttemptedAt: new Date(0).toISOString(),
+      requestDayKey: "",
+      dailyRequestCount: 0
     }
   };
 }

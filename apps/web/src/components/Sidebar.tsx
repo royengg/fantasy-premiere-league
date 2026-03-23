@@ -5,10 +5,12 @@ import {
   X, Search, UserPlus, Mail, Trophy
 } from "lucide-react";
 
+import type { DashboardRoute } from "../lib/dashboard-routes";
+
 interface SidebarProps {
-  currentScreen: string;
-  onNavigate: (screen: string) => void;
-  onLogout: () => void;
+  currentScreen: DashboardRoute;
+  onNavigate: (screen: DashboardRoute) => void;
+  onLogout: () => void | Promise<void>;
 }
 
 interface Friend {
@@ -33,11 +35,11 @@ export function Sidebar({ currentScreen, onNavigate, onLogout }: SidebarProps) {
   const [pendingRequests] = useState(2);
 
   const navItems = [
-    { id: "home", icon: Home, label: "Home" },
-    { id: "contests", icon: Calendar, label: "Contests" },
-    { id: "leagues", icon: Trophy, label: "Leagues" },
-    { id: "predictions", icon: BarChart2, label: "Predictions" },
-    { id: "locker", icon: Bookmark, label: "Locker" },
+    { id: "home" as const, icon: Home, label: "Home" },
+    { id: "contests" as const, icon: Calendar, label: "Contests" },
+    { id: "leagues" as const, icon: Trophy, label: "Leagues" },
+    { id: "predictions" as const, icon: BarChart2, label: "Predictions" },
+    { id: "locker" as const, icon: Bookmark, label: "Locker" },
   ];
 
   const bottomItems = [
@@ -61,7 +63,42 @@ export function Sidebar({ currentScreen, onNavigate, onLogout }: SidebarProps) {
 
   return (
     <>
-      <aside className="fixed left-0 top-0 bottom-0 w-16 lg:w-64 bg-surface-card border-r border-border flex flex-col z-40">
+      <header className="fixed inset-x-0 top-0 z-40 flex h-18 items-center justify-between border-b border-border bg-surface-card/95 px-4 backdrop-blur lg:hidden">
+        <button
+          type="button"
+          onClick={() => onNavigate("home")}
+          className="flex items-center gap-3"
+        >
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent">
+            <span className="text-sm font-black text-surface">FPL</span>
+          </div>
+          <div className="text-left">
+            <div className="text-sm font-bold">Fantasy Premier League</div>
+            <div className="text-[11px] uppercase tracking-[0.16em] text-text-muted">IPL 2026</div>
+          </div>
+        </button>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowSettings(true)}
+            className="flex h-10 w-10 items-center justify-center rounded-xl border border-border bg-surface-elevated text-text-muted"
+            aria-label="Open settings"
+          >
+            <Settings className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={onLogout}
+            className="flex h-10 w-10 items-center justify-center rounded-xl border border-border bg-surface-elevated text-text-muted"
+            aria-label="Log out"
+          >
+            <LogOut className="h-4 w-4" />
+          </button>
+        </div>
+      </header>
+
+      <aside className="fixed left-0 top-0 bottom-0 hidden w-64 border-r border-border bg-surface-card lg:flex lg:flex-col z-40">
         <div className="p-4 border-b border-border">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-accent flex items-center justify-center flex-shrink-0">
@@ -126,6 +163,31 @@ export function Sidebar({ currentScreen, onNavigate, onLogout }: SidebarProps) {
           </button>
         </div>
       </aside>
+
+      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-surface-card/95 px-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 backdrop-blur lg:hidden">
+        <div className="grid grid-cols-5 gap-1">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const isActive = currentScreen === item.id;
+
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => onNavigate(item.id)}
+                className={`flex min-h-16 flex-col items-center justify-center gap-1 rounded-2xl px-2 py-2 text-[11px] font-semibold transition-colors ${
+                  isActive
+                    ? "bg-accent/12 text-accent"
+                    : "text-text-muted hover:bg-white/5 hover:text-text"
+                }`}
+              >
+                <Icon className="h-5 w-5" />
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
 
       {showFriends && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={() => setShowFriends(false)}>

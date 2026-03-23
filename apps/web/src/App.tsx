@@ -7,7 +7,6 @@ import type { BuildRosterInput } from "@fantasy-cricket/types";
 import { AuthenticatedDashboard } from "./components/AuthenticatedDashboard";
 import { AuthScreen } from "./components/AuthScreen";
 import { OnboardingScreen } from "./components/OnboardingScreen";
-import { ThemeProvider } from "./components/ThemeProvider";
 import { useRealtimeDashboard } from "./hooks/use-realtime-dashboard";
 import { useSessionToken } from "./hooks/use-session-token";
 
@@ -53,15 +52,15 @@ export function App() {
 
   useRealtimeDashboard(API_URL, sessionToken, queryClient);
 
-  const dashboardQuery = useQuery({
-    queryKey: ["dashboard", sessionToken],
-    queryFn: () => api.getDashboard(),
+  const bootstrapQuery = useQuery({
+    queryKey: ["bootstrap", sessionToken],
+    queryFn: () => api.getBootstrap(),
     enabled: Boolean(sessionToken),
     retry: false
   });
 
   const hasExpiredSession = Boolean(
-    sessionToken && dashboardQuery.isError && isExpiredSessionError(dashboardQuery.error)
+    sessionToken && bootstrapQuery.isError && isExpiredSessionError(bootstrapQuery.error)
   );
 
   useEffect(() => {
@@ -71,7 +70,7 @@ export function App() {
 
     clearSession();
     setSessionNotice("Your session expired. Sign in again to continue.");
-    queryClient.removeQueries({ queryKey: ["dashboard"] });
+    queryClient.clear();
   }, [clearSession, hasExpiredSession, queryClient]);
 
   const registerMutation = useMutation({
@@ -87,7 +86,7 @@ export function App() {
   const onboardingMutation = useMutation({
     mutationFn: (payload: { username: string; favoriteTeamId: string }) =>
       api.completeOnboarding(payload),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["dashboard"] })
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["bootstrap"] })
   });
 
   const logoutMutation = useMutation({
@@ -97,29 +96,43 @@ export function App() {
   const rosterMutation = useMutation({
     mutationFn: ({ contestId, payload }: { contestId: string; payload: BuildRosterInput }) =>
       api.submitRoster(contestId, payload),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["dashboard"] })
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["contests"] });
+      await queryClient.invalidateQueries({ queryKey: ["home"] });
+    }
   });
 
   const answerMutation = useMutation({
     mutationFn: ({ questionId, optionId }: { questionId: string; optionId: string }) =>
       api.answerPrediction(questionId, optionId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["dashboard"] })
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["predictions"] })
   });
 
   const equipMutation = useMutation({
     mutationFn: (cosmeticId: string) => api.equipCosmetic(cosmeticId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["dashboard"] })
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["inventory"] })
   });
 
   const createLeagueMutation = useMutation({
-    mutationFn: (payload: { name: string; description?: string; visibility: "public" | "private" }) =>
+    mutationFn: (payload: {
+      name: string;
+      description?: string;
+      visibility: "public" | "private";
+      maxMembers: number;
+    }) =>
       api.createLeague(payload),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["dashboard"] })
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["leagues"] });
+      await queryClient.invalidateQueries({ queryKey: ["home"] });
+    }
   });
 
   const joinLeagueMutation = useMutation({
     mutationFn: (inviteCode: string) => api.joinLeague(inviteCode),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["dashboard"] })
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["leagues"] });
+      await queryClient.invalidateQueries({ queryKey: ["home"] });
+    }
   });
 
   const handleLogout = async () => {
@@ -130,68 +143,57 @@ export function App() {
     }
 
     clearSession();
-    queryClient.removeQueries({ queryKey: ["dashboard"] });
+    queryClient.clear();
   };
 
   if (!sessionToken) {
     return (
-      <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
-        <AuthScreen
-          onLogin={(payload) => loginMutation.mutateAsync(payload)}
-          onRegister={(payload) => registerMutation.mutateAsync(payload)}
-          notice={sessionNotice}
-        />
-      </ThemeProvider>
+      <AuthScreen
+        onLogin={(payload) => loginMutation.mutateAsync(payload)}
+        onRegister={(payload) => registerMutation.mutateAsync(payload)}
+        notice={sessionNotice}
+      />
     );
   }
 
-  if (dashboardQuery.isLoading || hasExpiredSession) {
+  if (bootstrapQuery.isLoading || hasExpiredSession) {
+    return <FullScreenSpinner />;
+  }
+
+  if (bootstrapQuery.isError || !bootstrapQuery.data) {
     return (
-      <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
-        <FullScreenSpinner />
-      </ThemeProvider>
+      <FullScreenError
+        message={(bootstrapQuery.error as Error)?.message ?? "Failed to load"}
+      />
     );
   }
 
-  if (dashboardQuery.isError || !dashboardQuery.data) {
+  if (!bootstrapQuery.data.profile.onboardingCompleted) {
     return (
-      <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
-        <FullScreenError
-          message={(dashboardQuery.error as Error)?.message ?? "Failed to load"}
-        />
-      </ThemeProvider>
-    );
-  }
-
-  if (!dashboardQuery.data.profile.onboardingCompleted) {
-    return (
-      <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
-        <OnboardingScreen
-          name={dashboardQuery.data.user.name}
-          initialUsername={dashboardQuery.data.profile.username}
-          initialFavoriteTeamId={dashboardQuery.data.profile.favoriteTeamId}
-          teams={dashboardQuery.data.teams}
-          onSubmit={(payload) => onboardingMutation.mutateAsync(payload)}
-        />
-      </ThemeProvider>
+      <OnboardingScreen
+        name={bootstrapQuery.data.user.name}
+        initialUsername={bootstrapQuery.data.profile.username}
+        initialFavoriteTeamId={bootstrapQuery.data.profile.favoriteTeamId}
+        teams={bootstrapQuery.data.teams}
+        onSubmit={(payload) => onboardingMutation.mutateAsync(payload)}
+      />
     );
   }
 
   return (
-    <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
-      <AuthenticatedDashboard
-        dashboard={dashboardQuery.data}
-        onLogout={handleLogout}
-        onSubmitRoster={(contestId, payload) =>
-          rosterMutation.mutateAsync({ contestId, payload })
-        }
-        onCreateLeague={(payload) => createLeagueMutation.mutateAsync(payload)}
-        onJoinLeague={(inviteCode) => joinLeagueMutation.mutateAsync(inviteCode)}
-        onAnswerPrediction={(questionId, optionId) =>
-          answerMutation.mutateAsync({ questionId, optionId })
-        }
-        onEquipCosmetic={(cosmeticId) => equipMutation.mutateAsync(cosmeticId)}
-      />
-    </ThemeProvider>
+    <AuthenticatedDashboard
+      bootstrap={bootstrapQuery.data}
+      api={api}
+      onLogout={handleLogout}
+      onSubmitRoster={(contestId, payload) =>
+        rosterMutation.mutateAsync({ contestId, payload })
+      }
+      onCreateLeague={(payload) => createLeagueMutation.mutateAsync(payload)}
+      onJoinLeague={(inviteCode) => joinLeagueMutation.mutateAsync(inviteCode)}
+      onAnswerPrediction={(questionId, optionId) =>
+        answerMutation.mutateAsync({ questionId, optionId })
+      }
+      onEquipCosmetic={(cosmeticId) => equipMutation.mutateAsync(cosmeticId)}
+    />
   );
 }

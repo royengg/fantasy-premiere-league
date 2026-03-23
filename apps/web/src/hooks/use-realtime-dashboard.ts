@@ -23,14 +23,31 @@ export function useRealtimeDashboard(
       timeout: 10_000
     });
 
+    const invalidatePageQueries = () => {
+      queryClient.invalidateQueries({ queryKey: ["home"] });
+      queryClient.invalidateQueries({ queryKey: ["contests"] });
+      queryClient.invalidateQueries({ queryKey: ["leagues"] });
+      queryClient.invalidateQueries({ queryKey: ["predictions"] });
+      queryClient.invalidateQueries({ queryKey: ["inventory"] });
+    };
+
     socket.on("contest:leaderboard", () => {
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      invalidatePageQueries();
+      queryClient.invalidateQueries({ queryKey: ["auction-room"] });
     });
     socket.on("league:activity", () => {
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      invalidatePageQueries();
+      queryClient.invalidateQueries({ queryKey: ["auction-room"] });
     });
     socket.on("user:refresh", () => {
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+      invalidatePageQueries();
+      queryClient.invalidateQueries({ queryKey: ["auction-rooms"] });
+      queryClient.invalidateQueries({ queryKey: ["auction-room"] });
+    });
+    socket.on("auction:rooms", () => {
+      queryClient.invalidateQueries({ queryKey: ["auction-rooms"] });
+      queryClient.invalidateQueries({ queryKey: ["auction-room"] });
     });
 
     socketRef.current = socket;

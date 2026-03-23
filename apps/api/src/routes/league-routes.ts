@@ -79,5 +79,22 @@ export function createLeagueRouter({ authService, gameService, realtime }: ApiDe
     }
   });
 
+  router.delete("/:leagueId", async (req, res) => {
+    let userId: string;
+    try {
+      userId = await authenticatedUserId(req, authService);
+    } catch (error) {
+      sendError(res, 401, error, "Could not delete league.");
+      return;
+    }
+
+    try {
+      const result = await gameService.deleteLeague(userId, req.params.leagueId);
+      res.json(result);
+    } catch (error) {
+      sendError(res, 400, error, "Could not delete league.");
+    }
+  });
+
   return router;
 }

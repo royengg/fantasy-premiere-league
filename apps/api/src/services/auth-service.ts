@@ -12,7 +12,6 @@ import { hashPassword, verifyPassword } from "../lib/password.js";
 import type { AuthRuntimeRepository } from "../repositories/runtime-repository.js";
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
-const STARTER_CREDITS = 100;
 
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
@@ -57,7 +56,6 @@ export class AuthService {
     const profile: Profile = {
       userId,
       username,
-      credits: STARTER_CREDITS,
       xp: 0,
       level: levelFromXp(0),
       streak: 0,

@@ -23,6 +23,7 @@
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
     "test": "vitest run",
+    "provider:sync:once": "bun run --cwd apps/api provider:sync:once",
     "prisma:generate": "bun run --cwd apps/api prisma:generate",
     "prisma:push": "bun run --cwd apps/api prisma:push",
     "prisma:migrate": "bun run --cwd apps/api prisma:migrate"

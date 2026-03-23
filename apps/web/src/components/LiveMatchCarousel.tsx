@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   ChevronLeft,
@@ -139,6 +139,12 @@ export function LiveMatchCarousel({
 }: LiveMatchCarouselProps) {
   const [activeIndex, setActiveIndex] = useState(0);
   const [now, setNow] = useState(Date.now());
+  const [heroHeight, setHeroHeight] = useState<number | null>(null);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const controlsRef = useRef<HTMLDivElement | null>(null);
+  const articleRef = useRef<HTMLElement | null>(null);
+  const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const swipeDeltaRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
   const cards = useMemo<MatchCardData[]>(() => {
     const teamMap = new Map(teams.map((team) => [team.id, team]));
@@ -211,11 +217,66 @@ export function LiveMatchCarousel({
     return () => window.clearInterval(interval);
   }, []);
 
+  useLayoutEffect(() => {
+    const updateHeroHeight = () => {
+      const section = sectionRef.current;
+      const controls = controlsRef.current;
+      if (!section || !controls) {
+        return;
+      }
+
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const isMobile = window.innerWidth < 640;
+      const bottomSafeSpace = isMobile ? 10 : window.innerWidth < 1024 ? 18 : 24;
+      const sectionTop = section.getBoundingClientRect().top;
+      const controlsHeight = controls.getBoundingClientRect().height;
+      const controlsGap = isMobile ? 8 : 12;
+      const availableSectionHeight = Math.floor(
+        viewportHeight - sectionTop - bottomSafeSpace,
+      );
+      const maxHeight = isMobile ? 840 : window.innerWidth < 1024 ? 680 : 720;
+      const measuredHeight = Math.max(
+        availableSectionHeight - controlsHeight - controlsGap + (isMobile ? 64 : 0),
+        260,
+      );
+
+      setHeroHeight(Math.min(measuredHeight, maxHeight));
+    };
+
+    updateHeroHeight();
+    window.addEventListener("resize", updateHeroHeight);
+    window.visualViewport?.addEventListener("resize", updateHeroHeight);
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => updateHeroHeight())
+        : null;
+
+    if (controlsRef.current) {
+      resizeObserver?.observe(controlsRef.current);
+    }
+    if (sectionRef.current) {
+      resizeObserver?.observe(sectionRef.current);
+    }
+
+    return () => {
+      window.removeEventListener("resize", updateHeroHeight);
+      window.visualViewport?.removeEventListener("resize", updateHeroHeight);
+      resizeObserver?.disconnect();
+    };
+  }, [cards.length]);
+
   if (cards.length === 0) {
     return null;
   }
 
   const activeCard = cards[activeIndex];
+  const viewportWidth =
+    typeof window !== "undefined" ? window.innerWidth : 1280;
+  const isMobile = viewportWidth < 640;
+  const isCompact =
+    isMobile || (heroHeight !== null && heroHeight < 540);
+  const isUltraCompact =
+    viewportWidth < 430 || (heroHeight !== null && heroHeight < 470);
   const metrics =
     activeCard.state === "scheduled"
       ? (() => {
@@ -239,14 +300,57 @@ export function LiveMatchCarousel({
     });
   };
 
+  const handleTouchStart = (event: React.TouchEvent<HTMLElement>) => {
+    if (event.touches.length !== 1) {
+      swipeStartRef.current = null;
+      return;
+    }
+
+    const touch = event.touches[0];
+    swipeStartRef.current = { x: touch.clientX, y: touch.clientY };
+    swipeDeltaRef.current = { x: 0, y: 0 };
+  };
+
+  const handleTouchMove = (event: React.TouchEvent<HTMLElement>) => {
+    if (!swipeStartRef.current || event.touches.length !== 1) {
+      return;
+    }
+
+    const touch = event.touches[0];
+    swipeDeltaRef.current = {
+      x: touch.clientX - swipeStartRef.current.x,
+      y: touch.clientY - swipeStartRef.current.y,
+    };
+  };
+
+  const handleTouchEnd = () => {
+    const start = swipeStartRef.current;
+    const delta = swipeDeltaRef.current;
+    swipeStartRef.current = null;
+    swipeDeltaRef.current = { x: 0, y: 0 };
+
+    if (!start) {
+      return;
+    }
+
+    const absX = Math.abs(delta.x);
+    const absY = Math.abs(delta.y);
+
+    if (absX < 44 || absX <= absY * 1.15) {
+      return;
+    }
+
+    goTo(delta.x < 0 ? "next" : "prev");
+  };
+
   return (
-    <section className="mb-10">
-      <div className="flex items-center justify-between gap-4 mb-4">
+    <section ref={sectionRef} className="mb-6 sm:mb-8">
+      <div ref={controlsRef} className="mb-2 flex items-center justify-between gap-3 sm:mb-3">
         <div>
-          <p className="text-accent text-xs font-bold uppercase tracking-widest mb-2">
+          <p className="text-accent mb-1.5 text-[10px] font-bold uppercase tracking-widest sm:mb-2 sm:text-xs">
             Match Center
           </p>
-          <h2 className="text-2xl font-extrabold tracking-tight">
+          <h2 className="text-lg font-extrabold tracking-tight sm:text-2xl">
             Live Matches
           </h2>
         </div>
@@ -255,7 +359,7 @@ export function LiveMatchCarousel({
           <button
             type="button"
             onClick={() => goTo("prev")}
-            className="w-11 h-11 rounded-2xl border border-border bg-surface-card text-text-muted hover:text-text hover:bg-white/5 transition-colors"
+            className="h-10 w-10 rounded-2xl border border-border bg-surface-card text-text-muted transition-colors hover:bg-white/5 hover:text-text sm:h-11 sm:w-11"
             aria-label="Show previous featured match"
           >
             <ChevronLeft className="w-5 h-5 mx-auto" />
@@ -272,8 +376,15 @@ export function LiveMatchCarousel({
       </div>
 
       <article
-        className="relative overflow-hidden rounded-[2rem] border border-white/8 min-h-[620px] lg:min-h-[560px]"
+        ref={articleRef}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchEnd}
+        className="relative overflow-hidden rounded-[1.5rem] border border-white/8 sm:rounded-[1.75rem]"
         style={{
+          height: heroHeight ? `${heroHeight}px` : undefined,
+          touchAction: "pan-y",
           background:
             "linear-gradient(180deg, rgba(5, 17, 24, 0.98) 0%, rgba(8, 20, 27, 0.95) 48%, rgba(8, 35, 18, 0.98) 100%)",
         }}
@@ -285,11 +396,11 @@ export function LiveMatchCarousel({
           }}
         />
 
-        <div className="absolute inset-x-0 bottom-0 h-[40%]">
-          <div className="absolute inset-x-[8%] bottom-[18%] h-20 rounded-[100%] blur-3xl bg-[#6ee7b7]/10" />
+        <div className="absolute inset-x-0 bottom-0 h-[38%] sm:h-[40%]">
+          <div className="absolute inset-x-[8%] bottom-[18%] h-16 rounded-[100%] blur-3xl bg-[#6ee7b7]/10 sm:h-20" />
           <div className="absolute inset-x-0 bottom-0 h-full bg-gradient-to-t from-[#123b1f]/95 via-[#13361d]/70 to-transparent" />
           <div
-            className="absolute left-[8%] right-[8%] bottom-10 h-28 opacity-60"
+            className="absolute bottom-8 left-[8%] right-[8%] h-20 opacity-60 sm:bottom-10 sm:h-28"
             style={{
               background:
                 "repeating-linear-gradient(90deg, rgba(255,255,255,0.06) 0 18px, transparent 18px 62px)",
@@ -299,7 +410,8 @@ export function LiveMatchCarousel({
           />
         </div>
 
-        <div className="absolute right-8 top-8 hidden lg:block">
+        {!isCompact ? (
+          <div className="absolute right-8 top-8 hidden lg:block">
           <div className="relative w-56 h-56">
             <div className="absolute inset-0 rounded-full blur-3xl bg-white/25" />
             <div
@@ -318,13 +430,32 @@ export function LiveMatchCarousel({
               ))}
             </div>
           </div>
-        </div>
+          </div>
+        ) : null}
 
-        <div className="relative z-10 grid gap-10 lg:grid-cols-[1.2fr_0.8fr] px-6 py-8 md:px-10 md:py-10 h-full">
-          <div className="flex flex-col justify-between min-h-[540px] lg:min-h-[480px]">
+        <div
+          className={`relative z-10 grid h-full ${
+            isMobile
+              ? isUltraCompact
+                ? "gap-3 px-3 pt-3 pb-6"
+                : "gap-3 px-3 pt-3 pb-7"
+              : isCompact
+                ? "gap-3 px-5 pt-5 pb-20"
+                : "gap-6 px-4 pt-4 pb-24 sm:px-6 sm:pt-6 sm:pb-20 md:px-10 md:pt-8 md:pb-22"
+          } lg:grid-cols-[1.2fr_0.8fr]`}
+        >
+          <div
+            className={`flex min-h-0 flex-col ${
+              isMobile ? "justify-start" : "justify-between"
+            } ${isCompact ? "gap-3 sm:gap-4" : "gap-5 sm:gap-6"}`}
+          >
             <div>
               <div
-                className="inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-bold uppercase tracking-[0.12em] mb-6"
+                className={`inline-flex items-center gap-2 rounded-full border font-bold uppercase tracking-[0.12em] ${
+                  isCompact
+                    ? "mb-3 px-2.5 py-1 text-[10px] sm:mb-4 sm:px-3 sm:py-1.5 sm:text-[11px]"
+                    : "mb-4 px-3 py-1.5 text-[11px] sm:mb-5 sm:px-4 sm:py-2 sm:text-xs"
+                }`}
                 style={{
                   color: activeCard.accent,
                   borderColor: `${activeCard.accent}45`,
@@ -340,69 +471,173 @@ export function LiveMatchCarousel({
               </div>
 
               <div className="max-w-2xl">
-                <h3 className="text-[3.1rem] sm:text-[4.1rem] md:text-[4.8rem] leading-[0.9] font-black tracking-[-0.05em] text-white">
+                <h3
+                  className={`leading-[0.94] font-black tracking-[-0.05em] text-white ${
+                    isUltraCompact
+                      ? "text-[1.55rem] sm:text-[2rem] md:text-[3rem] lg:text-[3.6rem]"
+                      : isCompact
+                        ? "text-[1.75rem] sm:text-[2.3rem] md:text-[3.4rem] lg:text-[4rem]"
+                        : "text-[1.95rem] sm:text-[2.8rem] md:text-[4.1rem] lg:text-[4.8rem]"
+                  }`}
+                >
                   {activeCard.title}
                 </h3>
                 <p
-                  className="mt-3 text-[3rem] sm:text-[4rem] md:text-[4.5rem] leading-[0.9] font-black italic tracking-[-0.05em]"
+                  className={`leading-[0.94] font-black italic tracking-[-0.05em] ${
+                    isUltraCompact
+                      ? "mt-1.5 text-[1.55rem] sm:mt-2 sm:text-[2rem] md:text-[2.9rem] lg:text-[3.4rem]"
+                      : isCompact
+                        ? "mt-2 text-[1.75rem] sm:text-[2.25rem] md:text-[3.2rem] lg:text-[3.7rem]"
+                        : "mt-2 text-[1.95rem] sm:mt-3 sm:text-[2.8rem] md:text-[4rem] lg:text-[4.5rem]"
+                  }`}
                   style={{ color: activeCard.accent }}
                 >
                   {matchHeadline(activeCard)}
                 </p>
-                <p className="mt-6 max-w-xl text-lg sm:text-xl leading-9 text-white/80">
+                <p
+                  className={`max-w-xl text-white/80 ${
+                    isUltraCompact
+                      ? "mt-2 text-xs leading-4.5 sm:text-sm sm:leading-5"
+                      : isCompact
+                        ? "mt-2.5 text-[13px] leading-5 sm:mt-4 sm:text-sm sm:leading-6 lg:text-base lg:leading-7"
+                        : "mt-3 text-sm leading-5 sm:mt-5 sm:text-base sm:leading-7 lg:text-xl lg:leading-9"
+                  }`}
+                >
                   {activeCard.subtitle}
                 </p>
+              </div>
+
+              <div className={`${isCompact ? "mt-2.5" : "mt-4"} lg:hidden`}>
+                <CompactMatchupCard
+                  homeTeam={activeCard.homeTeam}
+                  awayTeam={activeCard.awayTeam}
+                  homeColor={activeCard.homeColor}
+                  awayColor={activeCard.awayColor}
+                />
               </div>
             </div>
 
             <div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 max-w-2xl">
+              <div
+                className={`grid max-w-2xl grid-cols-4 ${
+                  isUltraCompact
+                    ? "gap-1.5 sm:gap-2"
+                    : isCompact
+                      ? "gap-2 sm:gap-2.5"
+                      : "gap-2.5 sm:gap-3"
+                }`}
+              >
                 {metrics.map((metric) => (
                   <div
                     key={metric.label}
-                    className="rounded-[1.4rem] border border-[#24445a] bg-[#081822]/72 backdrop-blur-sm px-4 py-5 shadow-[0_16px_40px_rgba(0,0,0,0.25)]"
+                    className={`border border-[#24445a] bg-[#081822]/72 shadow-[0_16px_40px_rgba(0,0,0,0.25)] backdrop-blur-sm ${
+                      isUltraCompact
+                        ? "rounded-[0.95rem] px-2 py-2"
+                        : isCompact
+                        ? "rounded-[1rem] px-2.5 py-2.5 sm:rounded-[1.2rem] sm:px-3 sm:py-3.5"
+                        : "rounded-[1.1rem] px-3 py-3.5 sm:rounded-[1.4rem] sm:px-4 sm:py-5"
+                    }`}
                   >
                     <div
-                      className="text-[2rem] font-black leading-none tracking-[-0.04em]"
+                      className={`font-black leading-none tracking-[-0.04em] ${
+                        isUltraCompact
+                          ? "text-[0.95rem] sm:text-[1.2rem]"
+                          : isCompact
+                            ? "text-[1.15rem] sm:text-[1.55rem]"
+                            : "text-[1.35rem] sm:text-[2rem]"
+                      }`}
                       style={{ color: activeCard.accent }}
                     >
                       {metric.value}
                     </div>
-                    <div className="mt-2 text-[0.68rem] font-bold uppercase tracking-[0.16em] text-white/35">
+                    <div
+                      className={`font-bold uppercase tracking-[0.16em] text-white/35 ${
+                        isUltraCompact
+                          ? "mt-1 text-[0.48rem] leading-3"
+                          : isCompact
+                            ? "mt-1.5 text-[0.58rem] sm:text-[0.62rem]"
+                            : "mt-2 text-[0.68rem]"
+                      }`}
+                    >
                       {metric.label}
                     </div>
                   </div>
                 ))}
               </div>
 
-              <div className="mt-8 flex flex-wrap items-center gap-4">
-                <button
-                  type="button"
-                  onClick={onOpenContests}
-                  className="inline-flex items-center gap-2 rounded-2xl px-7 py-4 text-lg font-black uppercase tracking-tight text-[#06202c] transition-transform hover:-translate-y-0.5"
-                  style={{
-                    backgroundColor: activeCard.accent,
-                    color: readableTextColor(activeCard.accent),
-                    boxShadow: `0 14px 36px ${activeCard.accent}40`,
-                  }}
+              <div
+                className={`flex flex-col items-start sm:flex-row sm:flex-wrap sm:items-center ${
+                  isUltraCompact
+                    ? "mt-2.5 gap-2 sm:mt-3 sm:gap-3"
+                    : isCompact
+                      ? "mt-3 gap-2.5 sm:mt-4 sm:gap-3"
+                      : "mt-4 gap-2.5 sm:mt-6 sm:gap-4"
+                }`}
+              >
+                <div
+                  className={`text-white/50 ${
+                    isUltraCompact
+                      ? "text-[10px] leading-4 sm:text-xs sm:leading-5"
+                      : isCompact
+                        ? "text-[11px] leading-4.5 sm:text-xs sm:leading-5"
+                        : "text-xs leading-5 sm:text-sm sm:leading-6"
+                  }`}
                 >
-                  Join Now
-                  <ArrowRight className="w-5 h-5" />
-                </button>
-
-                <div className="text-sm text-white/50">
                   {activeCard.contestCount > 0
                     ? `${activeCard.contestCount} contest${activeCard.contestCount === 1 ? "" : "s"} live for this fixture`
                     : "Latest IPL fixture from the provider schedule"}
-                  <span className="mx-2 text-white/25">|</span>
-                  {activeCard.venue}
+                  <span className="hidden sm:inline mx-2 text-white/25">|</span>
+                  <span className="block sm:inline">{activeCard.venue}</span>
                 </div>
               </div>
+
+              {isMobile ? (
+                <>
+                  <div className="mt-3 flex justify-center">
+                    <button
+                      type="button"
+                      onClick={onOpenContests}
+                      className={`inline-flex items-center justify-center gap-2 font-black uppercase tracking-tight transition-transform hover:-translate-y-0.5 ${
+                        isUltraCompact
+                          ? "min-w-[9rem] rounded-[1rem] px-4 py-2 text-[12px]"
+                          : "min-w-[10.5rem] rounded-[1.1rem] px-5 py-2.5 text-[13px]"
+                      }`}
+                      style={{
+                        backgroundColor: activeCard.accent,
+                        color: readableTextColor(activeCard.accent),
+                        boxShadow: `0 14px 36px ${activeCard.accent}40`,
+                      }}
+                    >
+                      Join Now
+                      <ArrowRight className={isUltraCompact ? "h-4 w-4" : "w-5 h-5"} />
+                    </button>
+                  </div>
+
+                  <div className="mt-3 flex items-center justify-center gap-2">
+                    {cards.map((card, index) => (
+                      <button
+                        key={card.id}
+                        type="button"
+                        onClick={() => setActiveIndex(index)}
+                        className="h-2.5 rounded-full transition-all"
+                        style={{
+                          width: index === activeIndex ? 28 : 10,
+                          background:
+                            index === activeIndex
+                              ? activeCard.accent
+                              : "rgba(255,255,255,0.18)",
+                        }}
+                        aria-label={`Show featured match ${index + 1}`}
+                      />
+                    ))}
+                  </div>
+                </>
+              ) : null}
             </div>
           </div>
 
-          <div className="flex items-center justify-center lg:justify-end">
-            <div className="w-full max-w-[420px] rounded-[2rem] border border-white/8 bg-[linear-gradient(180deg,rgba(53,81,97,0.72),rgba(30,45,56,0.82))] p-6 sm:p-8 shadow-[0_30px_80px_rgba(0,0,0,0.35)] backdrop-blur-md">
+          <div className="hidden items-center justify-center lg:flex lg:justify-end">
+            <div className="w-full max-w-[420px] rounded-[1.75rem] border border-white/8 bg-[linear-gradient(180deg,rgba(53,81,97,0.72),rgba(30,45,56,0.82))] p-4 shadow-[0_30px_80px_rgba(0,0,0,0.35)] backdrop-blur-md sm:rounded-[2rem] sm:p-8">
               <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-4">
                 <TeamTile
                   team={activeCard.homeTeam}
@@ -426,24 +661,62 @@ export function LiveMatchCarousel({
           </div>
         </div>
 
-        <div className="absolute left-0 right-0 bottom-5 z-20 flex items-center justify-center gap-2">
-          {cards.map((card, index) => (
+        {!isMobile ? (
+          <div
+            className={`absolute inset-x-0 z-20 flex justify-center px-3 ${
+              isUltraCompact
+                ? "bottom-10"
+                : isCompact
+                  ? "bottom-11"
+                  : "bottom-12 sm:bottom-14"
+            }`}
+          >
             <button
-              key={card.id}
               type="button"
-              onClick={() => setActiveIndex(index)}
-              className="h-2.5 rounded-full transition-all"
+              onClick={onOpenContests}
+              className={`inline-flex items-center justify-center gap-2 font-black uppercase tracking-tight transition-transform hover:-translate-y-0.5 ${
+                isUltraCompact
+                  ? "min-w-[9rem] rounded-[1rem] px-4 py-2 text-[12px]"
+                  : isCompact
+                    ? "min-w-[10rem] rounded-[1.1rem] px-4.5 py-2.5 text-[13px] sm:min-w-[11rem] sm:rounded-2xl sm:px-5 sm:py-3 sm:text-sm"
+                    : "min-w-[11rem] rounded-2xl px-5 py-3 text-sm sm:min-w-[12rem] sm:text-base lg:px-7 lg:py-4 lg:text-lg"
+              }`}
               style={{
-                width: index === activeIndex ? 28 : 10,
-                background:
-                  index === activeIndex
-                    ? activeCard.accent
-                    : "rgba(255,255,255,0.18)",
+                backgroundColor: activeCard.accent,
+                color: readableTextColor(activeCard.accent),
+                boxShadow: `0 14px 36px ${activeCard.accent}40`,
               }}
-              aria-label={`Show featured match ${index + 1}`}
-            />
-          ))}
-        </div>
+            >
+              Join Now
+              <ArrowRight className={isUltraCompact ? "h-4 w-4" : "w-5 h-5"} />
+            </button>
+          </div>
+        ) : null}
+
+        {!isMobile ? (
+          <div
+            className={`absolute left-0 right-0 z-20 flex items-center justify-center gap-2 ${
+              isUltraCompact ? "bottom-2.5" : isCompact ? "bottom-3" : "bottom-5"
+            }`}
+          >
+            {cards.map((card, index) => (
+              <button
+                key={card.id}
+                type="button"
+                onClick={() => setActiveIndex(index)}
+                className="h-2.5 rounded-full transition-all"
+                style={{
+                  width: index === activeIndex ? 28 : 10,
+                  background:
+                    index === activeIndex
+                      ? activeCard.accent
+                      : "rgba(255,255,255,0.18)",
+                }}
+                aria-label={`Show featured match ${index + 1}`}
+              />
+            ))}
+          </div>
+        ) : null}
       </article>
     </section>
   );
@@ -455,13 +728,39 @@ interface TeamTileProps {
   team: Team;
 }
 
+interface CompactMatchupCardProps {
+  awayColor: string;
+  awayTeam: Team;
+  homeColor: string;
+  homeTeam: Team;
+}
+
+function CompactMatchupCard({
+  awayColor,
+  awayTeam,
+  homeColor,
+  homeTeam,
+}: CompactMatchupCardProps) {
+  return (
+    <div className="rounded-[1.25rem] border border-white/8 bg-[linear-gradient(180deg,rgba(53,81,97,0.52),rgba(30,45,56,0.7))] p-2.5 shadow-[0_18px_46px_rgba(0,0,0,0.3)] backdrop-blur-md">
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2.5">
+        <CompactTeamTile team={homeTeam} primary={homeColor} />
+        <div className="text-center text-[1.7rem] font-black tracking-[-0.06em] text-white/14">
+          VS
+        </div>
+        <CompactTeamTile team={awayTeam} primary={awayColor} />
+      </div>
+    </div>
+  );
+}
+
 function TeamTile({ align, primary, team }: TeamTileProps) {
   return (
     <div
       className={`min-w-0 ${align === "right" ? "text-right" : "text-left"}`}
     >
       <div
-        className="w-24 h-24 sm:w-28 sm:h-28 mx-auto rounded-[1.4rem] border flex items-center justify-center shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]"
+        className="mx-auto flex h-20 w-20 items-center justify-center rounded-[1.15rem] border shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] sm:h-24 sm:w-24 sm:rounded-[1.4rem] lg:h-28 lg:w-28"
         style={{
           backgroundColor: primary,
           borderColor: `${primary}55`,
@@ -469,16 +768,42 @@ function TeamTile({ align, primary, team }: TeamTileProps) {
         }}
       >
         <span
-          className="text-[2rem] sm:text-[2.2rem] font-black italic tracking-[-0.05em]"
+          className="text-[1.6rem] font-black italic tracking-[-0.05em] sm:text-[2rem] lg:text-[2.2rem]"
           style={{ color: readableTextColor(primary) }}
         >
           {team.shortName}
         </span>
       </div>
-      <p className="mt-4 text-xl font-black text-white">
+      <p className="mt-3 text-base font-black text-white sm:mt-4 sm:text-xl">
         {teamDescriptor(team)}
       </p>
-      <p className="mt-1 text-sm uppercase tracking-[0.16em] text-white/40">
+      <p className="mt-1 text-[11px] uppercase tracking-[0.16em] text-white/40 sm:text-sm">
+        {team.city}
+      </p>
+    </div>
+  );
+}
+
+function CompactTeamTile({ primary, team }: { primary: string; team: Team }) {
+  return (
+    <div className="min-w-0 text-center">
+      <div
+        className="mx-auto flex h-12 w-12 items-center justify-center rounded-[0.9rem] border shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]"
+        style={{
+          backgroundColor: primary,
+          borderColor: `${primary}55`,
+          boxShadow: `0 16px 36px ${primary}30`,
+        }}
+      >
+        <span
+          className="text-[1rem] font-black italic tracking-[-0.05em]"
+          style={{ color: readableTextColor(primary) }}
+        >
+          {team.shortName}
+        </span>
+      </div>
+      <p className="mt-1.5 text-[13px] font-black leading-4 text-white">{teamDescriptor(team)}</p>
+      <p className="mt-0.5 text-[9px] uppercase tracking-[0.14em] text-white/40">
         {team.city}
       </p>
     </div>

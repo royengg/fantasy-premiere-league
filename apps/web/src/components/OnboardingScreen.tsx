@@ -48,11 +48,11 @@ export function OnboardingScreen({
 
   return (
     <div className="min-h-screen bg-surface bg-grid bg-radial flex items-center justify-center p-4">
-      <div className="card p-8 max-w-lg w-full">
+      <div className="card w-full max-w-lg p-5 sm:p-8">
         <p className="text-accent text-xs font-bold uppercase tracking-widest mb-3">
           First-Time Setup
         </p>
-        <h1 className="text-3xl font-extrabold tracking-tight mb-2">
+        <h1 className="mb-2 text-2xl font-extrabold tracking-tight sm:text-3xl">
           Finish your profile, {name.split(" ")[0]}
         </h1>
         <p className="text-text-muted mb-6">

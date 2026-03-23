@@ -2,22 +2,22 @@ import { Router, type Router as ExpressRouter } from "express";
 
 import { authenticatedUserId, sendError, type ApiDependencies } from "../lib/http.js";
 
-export function createBootstrapRouter({ authService, gameService }: ApiDependencies): ExpressRouter {
+export function createHomeRouter({ authService, gameService }: ApiDependencies): ExpressRouter {
   const router = Router();
 
-  router.get("/bootstrap", async (req, res) => {
+  router.get("/home", async (req, res) => {
     let userId: string;
     try {
       userId = await authenticatedUserId(req, authService);
     } catch (error) {
-      sendError(res, 401, error, "Bootstrap failed.");
+      sendError(res, 401, error, "Could not load home.");
       return;
     }
 
     try {
-      res.json(await gameService.getBootstrap(userId));
+      res.json(await gameService.getHomePage(userId));
     } catch (error) {
-      sendError(res, 404, error, "Bootstrap failed.");
+      sendError(res, 404, error, "Could not load home.");
     }
   });
 

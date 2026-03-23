@@ -14,23 +14,23 @@ export function NavigationCard({ title, subtitle, icon: Icon, stats, onClick }: 
   return (
     <button
       onClick={onClick}
-      className="card card-interactive w-full text-left p-6 relative overflow-hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      className="card card-interactive w-full text-left p-4 sm:p-6 relative overflow-hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       style={{ backgroundImage: cardBg }}
     >
-      <div className="flex items-start justify-between mb-8">
-        <div className="w-12 h-12 rounded-xl bg-accent/10 border border-accent/20 flex items-center justify-center">
-          <Icon className="w-6 h-6 text-accent" />
+      <div className="mb-6 flex items-start justify-between gap-4 sm:mb-8">
+        <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-accent/20 bg-accent/10 sm:h-12 sm:w-12">
+          <Icon className="h-5 w-5 text-accent sm:h-6 sm:w-6" />
         </div>
-        <div className="text-right">
-          <span className="text-2xl font-extrabold text-accent">{stats.value}</span>
+        <div className="min-w-0 text-right">
+          <span className="text-xl font-extrabold text-accent sm:text-2xl">{stats.value}</span>
           <span className="block text-xs text-text-muted">{stats.label}</span>
         </div>
       </div>
       
-      <h2 className="text-xl font-bold mb-1">{title}</h2>
+      <h2 className="text-lg font-bold mb-1 sm:text-xl">{title}</h2>
       <p className="text-text-muted text-sm">{subtitle}</p>
       
-      <div className="mt-6 flex items-center gap-2 text-text-muted text-sm font-medium">
+      <div className="mt-5 flex items-center gap-2 text-sm font-medium text-text-muted sm:mt-6">
         <span>Enter</span>
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8l4 4m0 0l-4 4m4-4H3" />

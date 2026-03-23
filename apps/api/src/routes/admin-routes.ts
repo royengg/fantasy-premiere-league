@@ -18,7 +18,9 @@ export function createAdminRouter({ adminService, authService, gameService, real
     try {
       res.json(await adminService.syncProvider());
     } catch (error) {
-      sendError(res, 500, error, "Provider sync failed.");
+      const message = error instanceof Error ? error.message : "Provider sync failed.";
+      const statusCode = /budget|blocked until|rate limit/i.test(message) ? 429 : 500;
+      sendError(res, statusCode, error, "Provider sync failed.");
     }
   });
 

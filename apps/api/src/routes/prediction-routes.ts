@@ -17,7 +17,7 @@ export function createPredictionRouter({ authService, gameService, realtime }: A
     }
 
     try {
-      res.json(await gameService.getPredictions(userId));
+      res.json(await gameService.getPredictionsPage(userId));
     } catch (error) {
       sendError(res, 404, error, "Could not load predictions.");
     }

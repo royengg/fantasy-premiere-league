@@ -37,6 +37,15 @@ export class CricketDataRateLimitError extends Error {
   }
 }
 
+export interface CricketDataBudgetStore {
+  reserveProviderApiRequest: (limit: number, dayKey: string, blockedUntil: string) => Promise<{
+    used: number;
+    remaining: number;
+  }>;
+  releaseProviderApiRequest: (dayKey: string) => Promise<void>;
+  blockProviderApiUntil: (blockedUntil: string, dayKey: string) => Promise<void>;
+}
+
 interface CricApiSeriesSummary {
   id: string;
   name: string;
@@ -98,8 +107,22 @@ interface CacheEntry<T> {
 class CricketDataService {
   private cache = new Map<string, CacheEntry<unknown>>();
   private blockedUntil: string | null = null;
+  private budgetStore: CricketDataBudgetStore | null = null;
 
   private static IPL_SERIES_SEARCH = "Indian Premier League";
+
+  configureBudgetStore(store: CricketDataBudgetStore) {
+    this.budgetStore = store;
+  }
+
+  private currentIstDayKey(now = new Date()) {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: IST_TIME_ZONE,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).format(now);
+  }
 
   private async fetchWithCache<T>(
     endpoint: string,
@@ -123,14 +146,43 @@ class CricketDataService {
       throw new Error("CRICKET_DATA_API_KEY is not configured.");
     }
 
+    const blockedUntil = this.blockedUntil;
+    const dayKey = this.currentIstDayKey();
+    if (this.budgetStore) {
+      try {
+        await this.budgetStore.reserveProviderApiRequest(
+          env.CRICKET_DATA_DAILY_LIMIT,
+          dayKey,
+          blockedUntil ?? nextIstMidnightIso()
+        );
+      } catch (error) {
+        this.blockedUntil = blockedUntil ?? nextIstMidnightIso();
+        throw new CricketDataRateLimitError(
+          error instanceof Error ? error.message : "Cricket Data API daily limit reached.",
+          this.blockedUntil
+        );
+      }
+    }
+
     const url = new URL(`${env.CRICKET_DATA_BASE_URL}${endpoint}`);
     url.searchParams.set("apikey", env.CRICKET_DATA_API_KEY);
-    
-    const response = await fetch(url);
+
+    let response: Response;
+    try {
+      response = await fetch(url);
+    } catch (error) {
+      if (this.budgetStore) {
+        await this.budgetStore.releaseProviderApiRequest(dayKey);
+      }
+      throw error;
+    }
     
     if (!response.ok) {
       if (response.status === 429) {
         this.blockedUntil = nextIstMidnightIso();
+        if (this.budgetStore) {
+          await this.budgetStore.blockProviderApiUntil(this.blockedUntil, dayKey);
+        }
         throw new CricketDataRateLimitError(
           "Cricket Data API rate limit exceeded.",
           this.blockedUntil
@@ -146,6 +198,9 @@ class CricketDataService {
       const message = json.reason || json.message || "API request failed";
       if (/hits today exceeded hits limit|rate limit|blocked/i.test(message)) {
         this.blockedUntil = nextIstMidnightIso();
+        if (this.budgetStore) {
+          await this.budgetStore.blockProviderApiUntil(this.blockedUntil, dayKey);
+        }
         throw new CricketDataRateLimitError(message, this.blockedUntil);
       }
 
@@ -179,7 +234,7 @@ class CricketDataService {
 
   private async getSeriesInfo(seriesId: string): Promise<CricApiSeriesInfoResponse> {
     return this.fetchWithCache<CricApiSeriesInfoResponse>(
-      `/series_info?id=${seriesId}`,
+      `/series_info?id=${seriesId}&offset=0`,
       env.CRICKET_DATA_CACHE_TTL
     );
   }
@@ -336,7 +391,7 @@ class CricketDataService {
 
   async getScorecard(matchId: string): Promise<CricketDataScorecard> {
     return this.fetchWithCache<CricketDataScorecard>(
-      `/matches/${matchId}/scorecard`,
+      `/match_scorecard?id=${matchId}&offset=0`,
       env.CRICKET_DATA_CACHE_TTL
     );
   }
@@ -362,10 +417,6 @@ class CricketDataService {
         (left, right) =>
           new Date(left.start_time).getTime() - new Date(right.start_time).getTime()
       );
-  }
-
-  clearCache() {
-    this.cache.clear();
   }
 }
 
