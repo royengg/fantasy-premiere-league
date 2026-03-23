@@ -1,5 +1,5 @@
 import cors from "cors";
-import express, { type Express } from "express";
+import express, { type Express, type NextFunction, type Request, type Response } from "express";
 
 import { createCorsOptions } from "./lib/cors.js";
 import { type ApiDependencies } from "./lib/http.js";
@@ -15,6 +15,8 @@ import { createLeagueRouter } from "./routes/league-routes.js";
 import { createPredictionRouter } from "./routes/prediction-routes.js";
 import { createTeamRouter } from "./routes/team-routes.js";
 
+// CSRF: Not required. The API uses Bearer token auth sent via Authorization header
+// from JS memory (not cookies), which is inherently CSRF-resistant. (#8)
 export function configureApp(app: Express, dependencies: ApiDependencies): void {
   app.use(cors(createCorsOptions(dependencies.env.CORS_ALLOWED_ORIGINS)));
   app.use(express.json({ limit: "64kb" }));
@@ -30,4 +32,14 @@ export function configureApp(app: Express, dependencies: ApiDependencies): void 
   app.use("/api/inventory", createInventoryRouter(dependencies));
   app.use("/api/teams", createTeamRouter(dependencies));
   app.use("/api/admin", createAdminRouter(dependencies));
+
+  // Global error handler — catches unhandled errors from async route handlers (#5)
+  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const message = err instanceof Error ? err.message : "Internal server error.";
+    // eslint-disable-next-line no-console
+    console.error("Unhandled route error:", err);
+    if (!res.headersSent) {
+      res.status(500).json({ message });
+    }
+  });
 }

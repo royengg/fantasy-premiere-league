@@ -20,8 +20,13 @@ export const authOnboardingSchema = z.object({
   favoriteTeamId: z.string().min(1)
 });
 
+// Defense-in-depth: strip HTML angle brackets from user-controlled names (#19)
+function stripHtmlBrackets(value: string) {
+  return value.replace(/[<>]/g, "");
+}
+
 export const createLeagueSchema = z.object({
-  name: z.string().trim().min(3).max(60),
+  name: z.string().trim().min(3).max(60).transform(stripHtmlBrackets),
   description: z.string().trim().max(200).optional(),
   visibility: z.enum(["public", "private"]),
   maxMembers: z.number().int().min(2).max(15)
@@ -31,7 +36,7 @@ const auctionCustomPoolPlayerIdsSchema = z.array(z.string().min(1)).max(500).opt
 
 const auctionRoomSchemaFields = {
   leagueId: z.string().trim().min(1).optional(),
-  name: z.string().trim().min(3).max(60),
+  name: z.string().trim().min(3).max(60).transform(stripHtmlBrackets),
   visibility: z.enum(["public", "private"]),
   maxParticipants: z.number().int().min(2).max(15),
   squadSize: z.number().int().min(2).max(20),

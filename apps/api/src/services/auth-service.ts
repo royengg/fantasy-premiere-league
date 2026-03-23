@@ -158,6 +158,11 @@ export class AuthService {
     await this.repository.deleteSessionByHash(hashSessionToken(token));
   }
 
+  /** Delete all sessions whose expiresAt is in the past (#1) */
+  async purgeExpiredSessions(): Promise<void> {
+    await this.repository.deleteExpiredSessions(new Date().toISOString());
+  }
+
   private authResponse(session: AuthSession, profile: Profile): AuthResponse {
     return {
       token: session.token,

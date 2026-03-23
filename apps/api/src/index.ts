@@ -43,6 +43,8 @@ async function createRuntime(): Promise<{
   };
 }
 
+const SESSION_REAPER_INTERVAL_MS = 1000 * 60 * 60 * 6; // 6 hours
+
 async function main() {
   const { repository, authService, gameService, auctionService } = await createRuntime();
   const adminService = new AdminService(gameService);
@@ -64,12 +66,31 @@ async function main() {
   server.listen(env.PORT, () => {
     providerSyncScheduler.start();
     auctionRoomScheduler.start();
+
+    // Purge expired sessions periodically (#1)
+    const sessionReaper = setInterval(() => {
+      void authService.purgeExpiredSessions().catch((error) => {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `Session reaper failed: ${error instanceof Error ? error.message : "Unknown error."}`
+        );
+      });
+    }, SESSION_REAPER_INTERVAL_MS);
+    sessionReaper.unref?.();
+
     // eslint-disable-next-line no-console
     console.log(
       `API listening on http://localhost:${env.PORT} using Prisma/Neon storage (CORS: ${env.CORS_ALLOWED_ORIGINS.join(", ")})`
     );
   });
 }
+
+// Catch unhandled promise rejections to prevent silent failures (#5)
+process.on("unhandledRejection", (reason) => {
+  // eslint-disable-next-line no-console
+  console.error("Unhandled promise rejection:", reason);
+  process.exit(1);
+});
 
 void main().catch((error) => {
   const message = error instanceof Error ? error.message : "Unknown database error.";

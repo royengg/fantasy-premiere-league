@@ -35,6 +35,9 @@ import { cricketDataService } from "./cricket-data-service.js";
 
 const MIN_PROVIDER_SYNC_REQUEST_BUDGET = 3;
 
+// GameService is an intentional facade (#9): it provides a stable API for routes
+// while allowing the underlying repository to be swapped for testing. Methods that
+// are simple pass-throughs to the repository are kept thin by design.
 export class GameService {
   private providerSyncInFlight: Promise<ProviderSyncResult> | null = null;
 
@@ -171,6 +174,20 @@ export class GameService {
       );
       if (snapshot.matches.length === 0) {
         throw new Error("Provider sync returned no matches. Existing provider data was preserved.");
+      }
+
+      // Guard against partial API responses that could wipe existing data (#13)
+      if (context.hasProviderFeed) {
+        const existingMatchCount = (await this.repository.getHomePagePayload("")).matches?.length ?? 0;
+        if (
+          existingMatchCount > 0 &&
+          snapshot.matches.length < existingMatchCount * 0.5
+        ) {
+          throw new Error(
+            `Provider sync returned only ${snapshot.matches.length} matches vs ${existingMatchCount} existing. ` +
+            `Rejecting to prevent data loss. Existing data was preserved.`
+          );
+        }
       }
 
       await this.repository.applyProviderSnapshot(snapshot);

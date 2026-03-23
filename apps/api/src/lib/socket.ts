@@ -38,6 +38,20 @@ export function createRealtimeHub(
   corsOrigins: readonly string[],
   authService: AuthService
 ): RealtimeHub {
+  // Warn if non-HTTPS origins are in use in production — tokens may be sent in plaintext (#7)
+  if (process.env.NODE_ENV === "production") {
+    const insecureOrigins = corsOrigins.filter(
+      (origin) => origin.startsWith("http://")
+    );
+    if (insecureOrigins.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `⚠️  Non-HTTPS CORS origins detected in production: ${insecureOrigins.join(", ")}. ` +
+        `Session tokens transmitted over plain HTTP are vulnerable to interception.`
+      );
+    }
+  }
+
   const io = new SocketServer(server, {
     cors: {
       origin(origin, callback) {

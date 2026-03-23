@@ -73,6 +73,17 @@ export function loadEnvFiles() {
   envLoaded = true;
 }
 
+function requireEnvVar(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(
+      `Required environment variable ${name} is not set. ` +
+      `Copy .env.example to .env and fill in the required values.`
+    );
+  }
+  return value;
+}
+
 export function loadEnv(): Env {
   loadEnvFiles();
 
@@ -82,16 +93,20 @@ export function loadEnv(): Env {
     PORT: Number(process.env.PORT ?? 4000),
     CORS_ORIGIN: corsOrigin,
     CORS_ALLOWED_ORIGINS: resolveCorsOrigins(corsOrigin),
-    DATABASE_URL:
-      process.env.DATABASE_URL ??
-      "postgresql://USER:PASSWORD@ep-example-pooler.us-east-1.aws.neon.tech/fantasy_cricket?sslmode=require&pgbouncer=true&connect_timeout=15",
-    DIRECT_URL:
-      process.env.DIRECT_URL ??
-      process.env.DATABASE_URL ??
-      "postgresql://USER:PASSWORD@ep-example.us-east-1.aws.neon.tech/fantasy_cricket?sslmode=require&connect_timeout=15",
+    DATABASE_URL: requireEnvVar("DATABASE_URL"),
+    DIRECT_URL: process.env.DIRECT_URL ?? requireEnvVar("DATABASE_URL"),
     CRICKET_DATA_API_KEY: process.env.CRICKET_DATA_API_KEY ?? "",
     CRICKET_DATA_BASE_URL: process.env.CRICKET_DATA_BASE_URL ?? "https://api.cricapi.com/v1",
     CRICKET_DATA_CACHE_TTL: Number(process.env.CRICKET_DATA_CACHE_TTL ?? 300),
     CRICKET_DATA_DAILY_LIMIT: Number(process.env.CRICKET_DATA_DAILY_LIMIT ?? 80)
   };
+}
+
+// Lazy singleton to avoid import-time side effects (#18)
+let cachedEnv: Env | null = null;
+export function getEnv(): Env {
+  if (!cachedEnv) {
+    cachedEnv = loadEnv();
+  }
+  return cachedEnv;
 }

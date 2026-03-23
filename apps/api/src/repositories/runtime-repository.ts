@@ -66,6 +66,7 @@ export interface AuthRuntimeRepository {
   }): Promise<Profile>;
   findActiveSessionUserId(sessionHash: string, now: string): Promise<string | null>;
   deleteSessionByHash(sessionHash: string): Promise<void>;
+  deleteExpiredSessions(now: string): Promise<void>;
   isUserAdmin(userId: string): Promise<boolean>;
 }
 

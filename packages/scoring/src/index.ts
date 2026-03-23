@@ -305,18 +305,21 @@ export function calculateRosterPoints(
   const substituteById = new Map(substituteBreakdown.map((entry) => [entry.playerId, entry]));
 
   for (const substitution of appliedSubstitutions) {
-    const starter = starterById.get(substitution.starterId);
+    const starterIndex = starterBreakdown.findIndex((entry) => entry.playerId === substitution.starterId);
     const substitute = substituteById.get(substitution.benchId);
-    if (!starter || !substitute) {
+    if (starterIndex === -1 || !substitute) {
       continue;
     }
 
-    starter.autoSubstituted = true;
-    starter.replacedPlayerId = substitute.playerId;
-    starter.replacedPlayerName = substitute.playerName;
-    starter.finalPoints = substitute.finalPoints;
-    starter.basePoints = substitute.basePoints;
-    starter.multiplier = substitute.multiplier;
+    // Clone to avoid mutating the original object (#12)
+    const cloned = { ...starterBreakdown[starterIndex] };
+    cloned.autoSubstituted = true;
+    cloned.replacedPlayerId = substitute.playerId;
+    cloned.replacedPlayerName = substitute.playerName;
+    cloned.finalPoints = substitute.finalPoints;
+    cloned.basePoints = substitute.basePoints;
+    cloned.multiplier = substitute.multiplier;
+    starterBreakdown[starterIndex] = cloned;
   }
 
   const breakdown = [...starterBreakdown, ...substituteBreakdown];

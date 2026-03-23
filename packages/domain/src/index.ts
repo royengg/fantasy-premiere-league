@@ -51,7 +51,7 @@ export function validateRoster(
     errors.push("This contest is locked.");
   }
 
-  if (match.state !== "scheduled" && match.state !== "live") {
+  if (match.state !== "scheduled") {
     errors.push("This match is not open for roster changes.");
   }
 
@@ -129,7 +129,7 @@ export function validateRoster(
   };
 }
 
-export function createInviteCode(name: string): string {
+export function createInviteCode(name: string, existingCodes?: ReadonlySet<string>): string {
   const prefix = name
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, "")
@@ -137,10 +137,24 @@ export function createInviteCode(name: string): string {
     .padEnd(4, "X");
 
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  const bytes = new Uint8Array(4);
-  globalThis.crypto.getRandomValues(bytes);
-  const suffix = Array.from(bytes, (value) => alphabet[value % alphabet.length]).join("");
-  return `${prefix}${suffix}`;
+  const maxAttempts = existingCodes ? 10 : 1;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const bytes = new Uint8Array(4);
+    globalThis.crypto.getRandomValues(bytes);
+    const suffix = Array.from(bytes, (value) => alphabet[value % alphabet.length]).join("");
+    const code = `${prefix}${suffix}`;
+
+    if (!existingCodes || !existingCodes.has(code)) {
+      return code;
+    }
+  }
+
+  // Fallback: add extra random chars to break collision (#15)
+  const extraBytes = new Uint8Array(4);
+  globalThis.crypto.getRandomValues(extraBytes);
+  const extra = Array.from(extraBytes, (value) => alphabet[value % alphabet.length]).join("");
+  return `${prefix}${extra}`;
 }
 
 export function createLeagueBanner(visibility: League["visibility"]): string {

@@ -599,6 +599,7 @@ type ProviderStateRow = Pick<
   "id" | "status" | "syncedAt" | "lastAttemptedAt" | "requestDayKey" | "dailyRequestCount" | "blockedUntil"
 >;
 
+// TODO: Split into AuthRepository, GameRepository, and ProviderRepository (#3)
 export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
@@ -747,55 +748,69 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
     username: string;
     favoriteTeamId: string;
   }): Promise<Profile> {
-    const [team, duplicate] = await Promise.all([
-      this.client.team.findUnique({
-        where: { id: payload.favoriteTeamId },
-        select: { id: true }
-      }),
-      this.client.profile.findFirst({
-        where: {
-          username: {
-            equals: payload.username,
-            mode: "insensitive"
-          },
-          NOT: {
-            userId: payload.userId
-          }
-        },
-        select: {
-          userId: true
+    // Use a transaction to prevent TOCTOU race on username uniqueness (#4)
+    try {
+      const profile = await this.client.$transaction(async (tx) => {
+        const [team, duplicate] = await Promise.all([
+          tx.team.findUnique({
+            where: { id: payload.favoriteTeamId },
+            select: { id: true }
+          }),
+          tx.profile.findFirst({
+            where: {
+              username: {
+                equals: payload.username,
+                mode: "insensitive"
+              },
+              NOT: {
+                userId: payload.userId
+              }
+            },
+            select: {
+              userId: true
+            }
+          })
+        ]);
+
+        if (!team) {
+          throw new Error("Favorite team not found.");
         }
-      })
-    ]);
 
-    if (!team) {
-      throw new Error("Favorite team not found.");
-    }
+        if (duplicate) {
+          throw new Error("Username is already taken.");
+        }
 
-    if (duplicate) {
-      throw new Error("Username is already taken.");
-    }
+        return tx.profile.update({
+          where: { userId: payload.userId },
+          data: {
+            username: payload.username,
+            favoriteTeamId: payload.favoriteTeamId,
+            onboardingCompleted: true
+          }
+        });
+      });
 
-    const profile = await this.client.profile.update({
-      where: { userId: payload.userId },
-      data: {
-        username: payload.username,
-        favoriteTeamId: payload.favoriteTeamId,
-        onboardingCompleted: true
+      return {
+        userId: profile.userId,
+        username: profile.username,
+        bio: profile.bio ?? undefined,
+        favoriteTeamId: profile.favoriteTeamId ?? undefined,
+        xp: profile.xp,
+        level: profile.level,
+        streak: profile.streak,
+        onboardingCompleted: profile.onboardingCompleted,
+        equippedCosmetics: asJson<Profile["equippedCosmetics"]>(profile.equippedCosmetics)
+      };
+    } catch (error) {
+      // Handle Prisma unique constraint violation on username (#4)
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      ) {
+        throw new Error("Username is already taken.");
       }
-    });
-
-    return {
-      userId: profile.userId,
-      username: profile.username,
-      bio: profile.bio ?? undefined,
-      favoriteTeamId: profile.favoriteTeamId ?? undefined,
-      xp: profile.xp,
-      level: profile.level,
-      streak: profile.streak,
-      onboardingCompleted: profile.onboardingCompleted,
-      equippedCosmetics: asJson<Profile["equippedCosmetics"]>(profile.equippedCosmetics)
-    };
+      throw error;
+    }
   }
 
   async findActiveSessionUserId(sessionHash: string, now: string): Promise<string | null> {
@@ -824,6 +839,12 @@ export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRe
   async deleteSessionByHash(sessionHash: string): Promise<void> {
     await this.client.session.deleteMany({
       where: { token: sessionHash }
+    });
+  }
+
+  async deleteExpiredSessions(now: string): Promise<void> {
+    await this.client.session.deleteMany({
+      where: { expiresAt: { lte: new Date(now) } }
     });
   }
 

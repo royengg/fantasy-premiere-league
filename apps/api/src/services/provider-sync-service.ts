@@ -619,18 +619,23 @@ export async function buildProviderSyncSnapshot(
   const prioritizedMatches = [...providerMatches].sort(compareSyncPriority);
 
   const squadMap = new Map<string, CricketDataSquad[]>();
-  for (const match of selectMatchesForSquadSync(
+  const squadTargets = selectMatchesForSquadSync(
     providerMatches,
     now,
     options.squadFetchMode ?? "window",
     maxSquadRequests
-  )) {
-    if (remainingFollowUpRequests <= 0) {
-      break;
-    }
+  ).filter(() => remainingFollowUpRequests > 0);
 
-    const squads = await gateway.getMatchSquad(match.id).catch(() => [] as CricketDataSquad[]);
-    squadMap.set(match.id, squads);
+  // Fetch squads in parallel instead of sequentially (#11)
+  const squadResults = await Promise.allSettled(
+    squadTargets.slice(0, Number.isFinite(remainingFollowUpRequests) ? remainingFollowUpRequests : undefined)
+      .map((match) => gateway.getMatchSquad(match.id).then((squads) => ({ matchId: match.id, squads })))
+  );
+
+  for (const result of squadResults) {
+    if (result.status === "fulfilled") {
+      squadMap.set(result.value.matchId, result.value.squads);
+    }
     if (Number.isFinite(remainingFollowUpRequests)) {
       remainingFollowUpRequests -= 1;
     }
@@ -644,21 +649,31 @@ export async function buildProviderSyncSnapshot(
   const statLines: PlayerMatchStatLine[] = [];
   const scoreEvents: FantasyScoreEvent[] = [];
 
+  // Cache normalized teams to avoid redundant normalizeIplTeam calls (#17)
+  const normalizedTeamCache = new Map<string, Team>();
+  function getNormalizedTeam(id: string, name: string, shortName: string, city: string): Team {
+    const cached = normalizedTeamCache.get(id);
+    if (cached) return cached;
+    const team = normalizeIplTeam({ id, name, shortName, city });
+    normalizedTeamCache.set(id, team);
+    return team;
+  }
+
   for (const sourceMatch of providerMatches) {
     const homeTeamId = providerId(TEAM_PREFIX, sourceMatch.home_team.id);
     const awayTeamId = providerId(TEAM_PREFIX, sourceMatch.away_team.id);
-    const homeTeam = normalizeIplTeam({
-      id: homeTeamId,
-      name: sourceMatch.home_team.name,
-      shortName: sourceMatch.home_team.short_name,
-      city: sourceMatch.city || sourceMatch.home_team.name
-    });
-    const awayTeam = normalizeIplTeam({
-      id: awayTeamId,
-      name: sourceMatch.away_team.name,
-      shortName: sourceMatch.away_team.short_name,
-      city: sourceMatch.city || sourceMatch.away_team.name
-    });
+    const homeTeam = getNormalizedTeam(
+      homeTeamId,
+      sourceMatch.home_team.name,
+      sourceMatch.home_team.short_name,
+      sourceMatch.city || sourceMatch.home_team.name
+    );
+    const awayTeam = getNormalizedTeam(
+      awayTeamId,
+      sourceMatch.away_team.name,
+      sourceMatch.away_team.short_name,
+      sourceMatch.city || sourceMatch.away_team.name
+    );
 
     teamMap.set(homeTeamId, homeTeam);
     teamMap.set(awayTeamId, awayTeam);

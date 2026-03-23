@@ -18,6 +18,17 @@ export function createFixedWindowRateLimiter({
 }: FixedWindowRateLimiterOptions): RequestHandler {
   const buckets = new Map<string, WindowEntry>();
 
+  // Periodically prune expired entries to prevent unbounded memory growth (#2)
+  const pruneInterval = setInterval(() => {
+    const now = Date.now();
+    for (const [key, entry] of buckets) {
+      if (entry.resetAt <= now) {
+        buckets.delete(key);
+      }
+    }
+  }, 60_000);
+  pruneInterval.unref?.();
+
   return (req, res, next) => {
     const key = `${req.ip ?? "unknown"}:${req.path}`;
     const now = Date.now();
