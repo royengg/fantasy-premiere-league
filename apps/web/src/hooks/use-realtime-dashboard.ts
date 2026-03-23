@@ -2,6 +2,10 @@ import { useEffect, useRef } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import { io, type Socket } from "socket.io-client";
 
+import type { AuctionRoomDetails } from "@fantasy-cricket/types";
+
+import { writeAuctionRoomToCache } from "../lib/auction-query-cache";
+
 export function useRealtimeDashboard(
   apiUrl: string,
   sessionToken: string | null,
@@ -19,6 +23,8 @@ export function useRealtimeDashboard(
 
     const socket = io(apiUrl, {
       auth: { token: sessionToken },
+      transports: ["websocket"],
+      upgrade: false,
       reconnectionAttempts: 5,
       timeout: 10_000
     });
@@ -33,7 +39,6 @@ export function useRealtimeDashboard(
 
     socket.on("contest:leaderboard", () => {
       invalidatePageQueries();
-      queryClient.invalidateQueries({ queryKey: ["auction-room"] });
     });
     socket.on("league:activity", () => {
       invalidatePageQueries();
@@ -44,6 +49,9 @@ export function useRealtimeDashboard(
       invalidatePageQueries();
       queryClient.invalidateQueries({ queryKey: ["auction-rooms"] });
       queryClient.invalidateQueries({ queryKey: ["auction-room"] });
+    });
+    socket.on("auction:room", (room: AuctionRoomDetails) => {
+      writeAuctionRoomToCache(queryClient, room);
     });
     socket.on("auction:rooms", () => {
       queryClient.invalidateQueries({ queryKey: ["auction-rooms"] });

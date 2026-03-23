@@ -152,18 +152,20 @@ export function createApiClient({ baseUrl, getSessionToken }: ApiClientOptions) 
       request<AuctionRoomDetails>(baseUrl, `/api/auctions/${roomId}/start`, {
         method: "POST"
       }, getSessionToken),
-    placeAuctionBid: (roomId: string, amountLakhs: number) =>
+    placeAuctionBid: (roomId: string, poolEntryId: string, amountLakhs: number) =>
       request<AuctionRoomDetails>(baseUrl, `/api/auctions/${roomId}/bid`, {
         method: "POST",
-        body: JSON.stringify({ amountLakhs })
+        body: JSON.stringify({ poolEntryId, amountLakhs })
       }, getSessionToken),
-    withdrawAuctionBid: (roomId: string) =>
+    withdrawAuctionBid: (roomId: string, poolEntryId: string) =>
       request<AuctionRoomDetails>(baseUrl, `/api/auctions/${roomId}/withdraw`, {
-        method: "POST"
+        method: "POST",
+        body: JSON.stringify({ poolEntryId })
       }, getSessionToken),
-    skipAuctionLot: (roomId: string) =>
+    skipAuctionLot: (roomId: string, poolEntryId: string) =>
       request<AuctionRoomDetails>(baseUrl, `/api/auctions/${roomId}/skip`, {
-        method: "POST"
+        method: "POST",
+        body: JSON.stringify({ poolEntryId })
       }, getSessionToken),
     submitRoster: (contestId: string, payload: BuildRosterInput) =>
       request<Roster>(baseUrl, `/api/contests/${contestId}/roster`, { method: "POST", body: JSON.stringify(payload) }, getSessionToken),

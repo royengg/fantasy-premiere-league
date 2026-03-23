@@ -105,7 +105,12 @@ export const auctionReadySchema = z.object({
 });
 
 export const auctionBidSchema = z.object({
+  poolEntryId: z.string().min(1),
   amountLakhs: z.number().int().min(25).max(10_000)
+});
+
+export const auctionLotActionSchema = z.object({
+  poolEntryId: z.string().min(1)
 });
 
 export const joinLeagueSchema = z.object({

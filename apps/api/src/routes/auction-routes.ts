@@ -2,6 +2,7 @@ import { Router, type Router as ExpressRouter } from "express";
 
 import {
   auctionBidSchema,
+  auctionLotActionSchema,
   auctionReadySchema,
   createAuctionRoomSchema,
   joinAuctionRoomSchema,
@@ -13,9 +14,31 @@ import { authenticatedUserId, sendError, type ApiDependencies } from "../lib/htt
 export function createAuctionRouter({
   authService,
   auctionService,
+  gameService,
   realtime
 }: ApiDependencies): ExpressRouter {
   const router = Router();
+  const spawnBroadcast = (task: () => Promise<void>) => {
+    void task().catch((error) => {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `Auction broadcast failed: ${error instanceof Error ? error.message : "Unknown error."}`
+      );
+    });
+  };
+
+  const broadcastRoom = async (room: Awaited<ReturnType<typeof auctionService.getRoom>>) => {
+    const recipients = new Set(room.participants.map((participant) => participant.userId));
+    if (room.room.leagueId) {
+      for (const userId of await gameService.leagueMemberIds(room.room.leagueId)) {
+        recipients.add(userId);
+      }
+    }
+
+    if (recipients.size > 0) {
+      realtime.emitAuctionRoom([...recipients], room);
+    }
+  };
 
   router.get("/", async (req, res) => {
     let userId: string;
@@ -65,9 +88,18 @@ export function createAuctionRouter({
 
     try {
       const room = await auctionService.createRoom(userId, parsed.data);
-      realtime.emitUserRefresh(await auctionService.participantIds(room.room.id), `auction:${room.room.id}`);
-      realtime.emitAuctionRoomsRefresh();
       res.status(201).json(room);
+      spawnBroadcast(async () => {
+        await broadcastRoom(room);
+        if (room.room.leagueId) {
+          realtime.emitLeagueActivity(
+            await gameService.leagueMemberIds(room.room.leagueId),
+            room.room.leagueId,
+            `${room.room.name} lobby opened.`
+          );
+        }
+        realtime.emitAuctionRoomsRefresh();
+      });
     } catch (error) {
       sendError(res, 400, error, "Could not create auction room.");
     }
@@ -90,9 +122,18 @@ export function createAuctionRouter({
 
     try {
       const room = await auctionService.joinRoom(userId, parsed.data);
-      realtime.emitUserRefresh(await auctionService.participantIds(room.room.id), `auction:${room.room.id}`);
-      realtime.emitAuctionRoomsRefresh();
       res.json(room);
+      spawnBroadcast(async () => {
+        await broadcastRoom(room);
+        if (room.room.leagueId) {
+          realtime.emitLeagueActivity(
+            await gameService.leagueMemberIds(room.room.leagueId),
+            room.room.leagueId,
+            `${userId} joined the auction lobby.`
+          );
+        }
+        realtime.emitAuctionRoomsRefresh();
+      });
     } catch (error) {
       sendError(res, 400, error, "Could not join auction room.");
     }
@@ -131,9 +172,11 @@ export function createAuctionRouter({
 
     try {
       const room = await auctionService.updateRoomSettings(userId, req.params.roomId, parsed.data);
-      realtime.emitUserRefresh(await auctionService.participantIds(room.room.id), `auction:${room.room.id}`);
-      realtime.emitAuctionRoomsRefresh();
       res.json(room);
+      spawnBroadcast(async () => {
+        await broadcastRoom(room);
+        realtime.emitAuctionRoomsRefresh();
+      });
     } catch (error) {
       sendError(res, 400, error, "Could not update auction room.");
     }
@@ -156,9 +199,11 @@ export function createAuctionRouter({
 
     try {
       const room = await auctionService.setReady(userId, req.params.roomId, parsed.data.ready);
-      realtime.emitUserRefresh(await auctionService.participantIds(room.room.id), `auction:${room.room.id}`);
-      realtime.emitAuctionRoomsRefresh();
       res.json(room);
+      spawnBroadcast(async () => {
+        await broadcastRoom(room);
+        realtime.emitAuctionRoomsRefresh();
+      });
     } catch (error) {
       sendError(res, 400, error, "Could not update ready state.");
     }
@@ -175,9 +220,11 @@ export function createAuctionRouter({
 
     try {
       const room = await auctionService.startRoom(userId, req.params.roomId);
-      realtime.emitUserRefresh(await auctionService.participantIds(room.room.id), `auction:${room.room.id}`);
-      realtime.emitAuctionRoomsRefresh();
       res.json(room);
+      spawnBroadcast(async () => {
+        await broadcastRoom(room);
+        realtime.emitAuctionRoomsRefresh();
+      });
     } catch (error) {
       sendError(res, 400, error, "Could not start auction.");
     }
@@ -199,16 +246,28 @@ export function createAuctionRouter({
     }
 
     try {
-      const room = await auctionService.placeBid(userId, req.params.roomId, parsed.data.amountLakhs);
-      realtime.emitUserRefresh(await auctionService.participantIds(room.room.id), `auction:${room.room.id}`);
-      realtime.emitAuctionRoomsRefresh();
+      const room = await auctionService.placeBid(
+        userId,
+        req.params.roomId,
+        parsed.data.poolEntryId,
+        parsed.data.amountLakhs
+      );
       res.json(room);
+      spawnBroadcast(async () => {
+        await broadcastRoom(room);
+      });
     } catch (error) {
       sendError(res, 400, error, "Could not place bid.");
     }
   });
 
   router.post("/:roomId/withdraw", async (req, res) => {
+    const parsed = auctionLotActionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid auction action." });
+      return;
+    }
+
     let userId: string;
     try {
       userId = await authenticatedUserId(req, authService);
@@ -218,16 +277,27 @@ export function createAuctionRouter({
     }
 
     try {
-      const room = await auctionService.withdrawFromLot(userId, req.params.roomId);
-      realtime.emitUserRefresh(await auctionService.participantIds(room.room.id), `auction:${room.room.id}`);
-      realtime.emitAuctionRoomsRefresh();
+      const room = await auctionService.withdrawFromLot(
+        userId,
+        req.params.roomId,
+        parsed.data.poolEntryId
+      );
       res.json(room);
+      spawnBroadcast(async () => {
+        await broadcastRoom(room);
+      });
     } catch (error) {
       sendError(res, 400, error, "Could not withdraw from bidding.");
     }
   });
 
   router.post("/:roomId/skip", async (req, res) => {
+    const parsed = auctionLotActionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid auction action." });
+      return;
+    }
+
     let userId: string;
     try {
       userId = await authenticatedUserId(req, authService);
@@ -237,10 +307,15 @@ export function createAuctionRouter({
     }
 
     try {
-      const room = await auctionService.voteSkip(userId, req.params.roomId);
-      realtime.emitUserRefresh(await auctionService.participantIds(room.room.id), `auction:${room.room.id}`);
-      realtime.emitAuctionRoomsRefresh();
+      const room = await auctionService.voteSkip(
+        userId,
+        req.params.roomId,
+        parsed.data.poolEntryId
+      );
       res.json(room);
+      spawnBroadcast(async () => {
+        await broadcastRoom(room);
+      });
     } catch (error) {
       sendError(res, 400, error, "Could not vote to skip.");
     }

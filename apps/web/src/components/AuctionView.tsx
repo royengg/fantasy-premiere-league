@@ -13,12 +13,17 @@ import {
 } from "lucide-react";
 
 import { ApiError, createApiClient } from "@fantasy-cricket/api-client";
-import { nextAuctionBidAmount } from "@fantasy-cricket/domain";
+import { canAffordAuctionBid, nextAuctionBidAmount } from "@fantasy-cricket/domain";
 import type {
   AuctionCatalogPlayer,
   AuctionRoomDetails,
   League
 } from "@fantasy-cricket/types";
+
+import {
+  updateAuctionRoomInCache,
+  writeAuctionRoomToCache
+} from "../lib/auction-query-cache";
 
 type ApiClient = ReturnType<typeof createApiClient>;
 
@@ -46,7 +51,7 @@ const DEFAULT_FORM_STATE: AuctionFormState = {
   visibility: "private",
   maxParticipants: 10,
   squadSize: 13,
-  bidWindowSeconds: 10,
+  bidWindowSeconds: 30,
   bidExtensionSeconds: 5,
   playerPoolMode: "all",
   playerPoolPlayerIds: []
@@ -56,15 +61,35 @@ function formatCrores(lakhs: number) {
   return `₹${(lakhs / 100).toFixed(2)}Cr`;
 }
 
+function formatBidToken(lakhs: number) {
+  if (lakhs >= 100) {
+    return `₹${(lakhs / 100).toFixed(lakhs % 100 === 0 ? 0 : 2)}Cr`;
+  }
+
+  return `₹${lakhs}L`;
+}
+
+function nameInitials(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("");
+}
+
 function timeLeftLabel(endsAt?: string, nowMs = Date.now()) {
   if (!endsAt) {
     return "Waiting";
   }
-  const remainingMs = new Date(endsAt).getTime() - nowMs;
-  if (remainingMs <= 0) {
-    return "Closing...";
+  const remainingMs = Math.max(0, new Date(endsAt).getTime() - nowMs);
+  const totalSeconds = Math.ceil(remainingMs / 1000);
+  if (totalSeconds >= 60) {
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${String(seconds).padStart(2, "0")}`;
   }
-  return `${Math.ceil(remainingMs / 1000)}s`;
+  return `${totalSeconds}s`;
 }
 
 function isApiError(error: unknown): error is ApiError {
@@ -77,6 +102,25 @@ function selectedCatalogPlayers(
 ) {
   const selected = new Set(ids);
   return catalog.filter((player) => selected.has(player.playerId));
+}
+
+function activeRoomRefetchInterval(room: AuctionRoomDetails | undefined) {
+  if (!room) {
+    return false;
+  }
+
+  return room.room.state === "waiting" || room.room.state === "live"
+    ? 1000
+    : false;
+}
+
+function optimisticBidEndsAt(room: AuctionRoomDetails, nowMs: number) {
+  const currentEndsAtMs = room.currentLot?.lotEndsAt
+    ? new Date(room.currentLot.lotEndsAt).getTime()
+    : nowMs;
+  return new Date(
+    Math.max(nowMs, currentEndsAtMs) + room.settings.bidExtensionSeconds * 1000
+  ).toISOString();
 }
 
 export function AuctionView({
@@ -97,14 +141,16 @@ export function AuctionView({
   useEffect(() => {
     const interval = window.setInterval(() => {
       setClockNow(Date.now());
-    }, 1000);
+    }, 250);
     return () => window.clearInterval(interval);
   }, []);
 
   const roomsQuery = useQuery({
     queryKey: ["auction-rooms"],
     queryFn: () => api.getAuctionRooms(),
-    enabled: !roomOnly
+    enabled: !roomOnly,
+    refetchInterval: roomOnly ? false : 2000,
+    refetchIntervalInBackground: true
   });
 
   const leagueRooms = useMemo(() => {
@@ -124,7 +170,12 @@ export function AuctionView({
   const selectedRoomQuery = useQuery({
     queryKey: ["auction-room", selectedRoomId],
     queryFn: () => api.getAuctionRoom(selectedRoomId!),
-    enabled: Boolean(selectedRoomId)
+    enabled: Boolean(selectedRoomId),
+    refetchInterval: ({ state }) =>
+      activeRoomRefetchInterval(state.data as AuctionRoomDetails | undefined),
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true
   });
 
   useEffect(() => {
@@ -193,11 +244,10 @@ export function AuctionView({
           : formState.maxParticipants,
         squadSize: league?.squadSize ?? formState.squadSize
       }),
-    onSuccess: async (room) => {
+    onSuccess: (room) => {
       setStatus({ ok: true, message: "Auction room created." });
       setSelectedRoomId(room.room.id);
-      await queryClient.invalidateQueries({ queryKey: ["auction-rooms"] });
-      await queryClient.invalidateQueries({ queryKey: ["auction-room", room.room.id] });
+      writeAuctionRoomToCache(queryClient, room);
     },
     onError: (error) =>
       setStatus({
@@ -217,10 +267,9 @@ export function AuctionView({
         playerPoolMode: formState.playerPoolMode,
         playerPoolPlayerIds: formState.playerPoolPlayerIds
       }),
-    onSuccess: async (room) => {
+    onSuccess: (room) => {
       setStatus({ ok: true, message: "Auction room updated." });
-      await queryClient.invalidateQueries({ queryKey: ["auction-rooms"] });
-      await queryClient.invalidateQueries({ queryKey: ["auction-room", room.room.id] });
+      writeAuctionRoomToCache(queryClient, room);
     },
     onError: (error) =>
       setStatus({
@@ -231,12 +280,11 @@ export function AuctionView({
 
   const joinRoomMutation = useMutation({
     mutationFn: (payload: { roomId?: string; inviteCode?: string }) => api.joinAuctionRoom(payload),
-    onSuccess: async (room) => {
+    onSuccess: (room) => {
       setStatus({ ok: true, message: "Joined auction room." });
       setSelectedRoomId(room.room.id);
       setJoinInviteCode("");
-      await queryClient.invalidateQueries({ queryKey: ["auction-rooms"] });
-      await queryClient.invalidateQueries({ queryKey: ["auction-room", room.room.id] });
+      writeAuctionRoomToCache(queryClient, room);
     },
     onError: (error) =>
       setStatus({
@@ -247,60 +295,222 @@ export function AuctionView({
 
   const readyMutation = useMutation({
     mutationFn: (ready: boolean) => api.setAuctionReady(selectedRoomId!, ready),
-    onSuccess: async (room) => {
-      await queryClient.invalidateQueries({ queryKey: ["auction-room", room.room.id] });
-      await queryClient.invalidateQueries({ queryKey: ["auction-rooms"] });
+    onMutate: async (ready) => {
+      if (!selectedRoomId) {
+        return { previousRoom: undefined as AuctionRoomDetails | undefined };
+      }
+
+      await queryClient.cancelQueries({ queryKey: ["auction-room", selectedRoomId] });
+      const previousRoom = queryClient.getQueryData<AuctionRoomDetails>([
+        "auction-room",
+        selectedRoomId
+      ]);
+
+      updateAuctionRoomInCache(queryClient, selectedRoomId, (room) => ({
+        ...room,
+        participants: room.participants.map((participant) =>
+          participant.userId === currentUserId
+            ? { ...participant, ready }
+            : participant
+        )
+      }));
+
+      return { previousRoom };
     },
-    onError: (error) =>
+    onSuccess: (room) => {
+      writeAuctionRoomToCache(queryClient, room);
+    },
+    onError: (error, _ready, context) => {
+      if (selectedRoomId && context?.previousRoom) {
+        queryClient.setQueryData(["auction-room", selectedRoomId], context.previousRoom);
+      }
       setStatus({
         ok: false,
         message: isApiError(error) ? error.message : "Could not update ready state."
-      })
+      });
+    }
   });
 
   const bidMutation = useMutation({
-    mutationFn: (amountLakhs: number) => api.placeAuctionBid(selectedRoomId!, amountLakhs),
-    onSuccess: async (room) => {
-      await queryClient.invalidateQueries({ queryKey: ["auction-room", room.room.id] });
+    mutationFn: (payload: { poolEntryId: string; amountLakhs: number }) =>
+      api.placeAuctionBid(selectedRoomId!, payload.poolEntryId, payload.amountLakhs),
+    onMutate: async ({ amountLakhs, poolEntryId }) => {
+      if (!selectedRoomId) {
+        return { previousRoom: undefined as AuctionRoomDetails | undefined };
+      }
+
+      await queryClient.cancelQueries({ queryKey: ["auction-room", selectedRoomId] });
+      const previousRoom = queryClient.getQueryData<AuctionRoomDetails>([
+        "auction-room",
+        selectedRoomId
+      ]);
+
+      if (
+        previousRoom?.currentLot &&
+        previousRoom.room.state === "live" &&
+        previousRoom.currentLot.poolEntryId === poolEntryId
+      ) {
+        const actingParticipant = previousRoom.participants.find(
+          (participant) => participant.userId === currentUserId
+        );
+        const optimisticCreatedAt = new Date().toISOString();
+
+        updateAuctionRoomInCache(queryClient, selectedRoomId, (room) => ({
+          ...room,
+          currentLot: room.currentLot
+            ? {
+                ...room.currentLot,
+                currentBidLakhs: amountLakhs,
+                currentLeaderUserId: currentUserId,
+                currentLeaderDisplayName:
+                  actingParticipant?.displayName ?? room.currentLot.currentLeaderDisplayName,
+                lotEndsAt: optimisticBidEndsAt(room, Date.now())
+              }
+            : room.currentLot,
+          skipVoteUserIds: room.skipVoteUserIds.filter((userId) => userId !== currentUserId),
+          withdrawnUserIds: room.withdrawnUserIds.filter((userId) => userId !== currentUserId),
+          recentBids: room.currentLot
+            ? [
+                {
+                  id: `optimistic-bid-${currentUserId}-${optimisticCreatedAt}`,
+                  roomId: room.room.id,
+                  poolEntryId: room.currentLot.poolEntryId,
+                  userId: currentUserId,
+                  displayName: actingParticipant?.displayName ?? "You",
+                  amountLakhs,
+                  createdAt: optimisticCreatedAt
+                },
+                ...room.recentBids.filter(
+                  (bid) =>
+                    !(
+                      bid.userId === currentUserId &&
+                      bid.poolEntryId === room.currentLot?.poolEntryId &&
+                      bid.amountLakhs === amountLakhs
+                    )
+                )
+              ].slice(0, 12)
+            : room.recentBids,
+          eventLog: room.currentLot
+            ? [
+                ...room.eventLog,
+                {
+                  id: `optimistic-event-${currentUserId}-${optimisticCreatedAt}`,
+                  type: "bid-placed" as const,
+                  actorUserId: currentUserId,
+                  message: `${actingParticipant?.displayName ?? "You"} bid ${formatBidToken(amountLakhs)}.`,
+                  createdAt: optimisticCreatedAt
+                }
+              ].slice(-20)
+            : room.eventLog
+        }));
+      }
+
+      return { previousRoom };
     },
-    onError: (error) =>
+    onSuccess: (room) => {
+      writeAuctionRoomToCache(queryClient, room);
+    },
+    onError: (error, _amountLakhs, context) => {
+      if (selectedRoomId && context?.previousRoom) {
+        queryClient.setQueryData(["auction-room", selectedRoomId], context.previousRoom);
+      }
       setStatus({
         ok: false,
         message: isApiError(error) ? error.message : "Could not place bid."
-      })
+      });
+    }
   });
 
   const withdrawMutation = useMutation({
-    mutationFn: () => api.withdrawAuctionBid(selectedRoomId!),
-    onSuccess: async (room) => {
-      await queryClient.invalidateQueries({ queryKey: ["auction-room", room.room.id] });
+    mutationFn: (poolEntryId: string) => api.withdrawAuctionBid(selectedRoomId!, poolEntryId),
+    onMutate: async (poolEntryId) => {
+      if (!selectedRoomId) {
+        return { previousRoom: undefined as AuctionRoomDetails | undefined };
+      }
+
+      await queryClient.cancelQueries({ queryKey: ["auction-room", selectedRoomId] });
+      const previousRoom = queryClient.getQueryData<AuctionRoomDetails>([
+        "auction-room",
+        selectedRoomId
+      ]);
+
+      updateAuctionRoomInCache(queryClient, selectedRoomId, (room) => {
+        if (room.currentLot?.poolEntryId !== poolEntryId) {
+          return room;
+        }
+
+        return {
+          ...room,
+          skipVoteUserIds: room.skipVoteUserIds.filter((userId) => userId !== currentUserId),
+          withdrawnUserIds: room.withdrawnUserIds.includes(currentUserId)
+            ? room.withdrawnUserIds
+            : [...room.withdrawnUserIds, currentUserId]
+        };
+      });
+
+      return { previousRoom };
     },
-    onError: (error) =>
+    onSuccess: (room) => {
+      writeAuctionRoomToCache(queryClient, room);
+    },
+    onError: (error, _vars, context) => {
+      if (selectedRoomId && context?.previousRoom) {
+        queryClient.setQueryData(["auction-room", selectedRoomId], context.previousRoom);
+      }
       setStatus({
         ok: false,
         message: isApiError(error) ? error.message : "Could not withdraw."
-      })
+      });
+    }
   });
 
   const skipMutation = useMutation({
-    mutationFn: () => api.skipAuctionLot(selectedRoomId!),
-    onSuccess: async (room) => {
-      await queryClient.invalidateQueries({ queryKey: ["auction-room", room.room.id] });
+    mutationFn: (poolEntryId: string) => api.skipAuctionLot(selectedRoomId!, poolEntryId),
+    onMutate: async (poolEntryId) => {
+      if (!selectedRoomId) {
+        return { previousRoom: undefined as AuctionRoomDetails | undefined };
+      }
+
+      await queryClient.cancelQueries({ queryKey: ["auction-room", selectedRoomId] });
+      const previousRoom = queryClient.getQueryData<AuctionRoomDetails>([
+        "auction-room",
+        selectedRoomId
+      ]);
+
+      updateAuctionRoomInCache(queryClient, selectedRoomId, (room) => {
+        if (room.currentLot?.poolEntryId !== poolEntryId) {
+          return room;
+        }
+
+        return {
+          ...room,
+          withdrawnUserIds: room.withdrawnUserIds.filter((userId) => userId !== currentUserId),
+          skipVoteUserIds: room.skipVoteUserIds.includes(currentUserId)
+            ? room.skipVoteUserIds
+            : [...room.skipVoteUserIds, currentUserId]
+        };
+      });
+
+      return { previousRoom };
     },
-    onError: (error) =>
+    onSuccess: (room) => {
+      writeAuctionRoomToCache(queryClient, room);
+    },
+    onError: (error, _vars, context) => {
+      if (selectedRoomId && context?.previousRoom) {
+        queryClient.setQueryData(["auction-room", selectedRoomId], context.previousRoom);
+      }
       setStatus({
         ok: false,
         message: isApiError(error) ? error.message : "Could not vote to skip."
-      })
+      });
+    }
   });
 
   const room = selectedRoomQuery.data;
   const currentSeat = room?.participants.find((participant) => participant.userId === currentUserId);
   const isHost = room?.room.hostUserId === currentUserId;
   const canEditWaitingRoom = Boolean(room && isHost && room.room.state === "waiting");
-  const nextBidLakhs = room?.currentLot
-    ? nextAuctionBidAmount(room.settings.basePriceLakhs, room.currentLot.currentBidLakhs)
-    : null;
   const effectiveVisibility = league?.visibility ?? formState.visibility;
   const effectiveSquadSize = league?.squadSize ?? formState.squadSize;
   const maxParticipantsLimit = league?.maxMembers ?? 15;
@@ -341,280 +551,711 @@ export function AuctionView({
     }));
   };
 
-  const roomPanel = selectedRoomQuery.isLoading ? (
-    <div className="card p-6 text-text-muted">Loading room...</div>
-  ) : room ? (
-    <>
-      <div className="card p-4 sm:p-6 space-y-4">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <div className="flex items-center gap-2 mb-2">
-              <Gavel className="w-5 h-5 text-accent" />
-              <span className="text-xs font-bold uppercase tracking-widest text-accent">
-                {room.room.leagueName ? "League Auction Room" : "Live Auction Room"}
-              </span>
-            </div>
-            <h3 className="text-xl font-bold sm:text-2xl">{room.room.name}</h3>
-            <div className="flex flex-wrap gap-3 mt-2 text-sm text-text-muted">
-              <span>{room.room.hostDisplayName} hosts</span>
-              <span>{room.room.participantCount}/{room.room.maxParticipants} participants</span>
-              <span>{room.settings.squadSize} player squads</span>
-              <span>{formatCrores(room.settings.purseLakhs)} purse</span>
-            </div>
-            {room.room.inviteCode ? (
-              <div className="mt-3 text-xs text-accent font-semibold">
-                Invite code: {room.room.inviteCode}
+  const currentBidLakhs = room?.currentLot?.currentBidLakhs ?? 0;
+  const currentUserRoster = room?.rosters.find((roster) => roster.userId === currentUserId);
+  const currentUserPurchasedCount =
+    room && currentSeat ? room.settings.squadSize - currentSeat.slotsRemaining : 0;
+  const isCurrentUserLeading = room?.currentLot?.currentLeaderUserId === currentUserId;
+  const minimumQuickBidLakhs = room?.currentLot
+    ? nextAuctionBidAmount(
+        room.settings.basePriceLakhs,
+        room.currentLot.currentBidLakhs ?? undefined
+      )
+    : null;
+  const quickBidChoices =
+    room?.currentLot && currentSeat
+      ? [25, 50, 100].map((incrementLakhs) => {
+          const currentLot = room.currentLot!;
+          const amountLakhs = currentBidLakhs + incrementLakhs;
+          const blockedByOverseas =
+            currentLot.nationality === "overseas" &&
+            currentSeat.overseasCount >= room.settings.maxOverseas;
+          const affordable = canAffordAuctionBid(
+            currentSeat.purseRemainingLakhs,
+            currentSeat.slotsRemaining,
+            amountLakhs,
+            room.settings.basePriceLakhs
+          );
+
+          return {
+            incrementLakhs,
+            amountLakhs,
+            disabled:
+              room.room.state !== "live" ||
+              currentLot.currentLeaderUserId === currentUserId ||
+              currentSeat.slotsRemaining <= 0 ||
+              blockedByOverseas ||
+              !affordable ||
+              (minimumQuickBidLakhs !== null && amountLakhs < minimumQuickBidLakhs)
+          };
+        })
+      : [];
+
+  const liveAuctionTable =
+    room && roomOnly ? (
+      <div className="-mx-4 pb-[calc(15rem+env(safe-area-inset-bottom))] sm:-mx-6 sm:pb-[calc(14rem+env(safe-area-inset-bottom))] lg:-mx-8 lg:pb-56">
+        <div className="border-y border-border bg-[radial-gradient(circle_at_top,rgba(34,197,94,0.14),transparent_36%),linear-gradient(180deg,#0d1012_0%,#060709_100%)] px-4 py-4 sm:px-6 lg:px-8 lg:py-6">
+          <div className="mx-auto max-w-[1560px]">
+            <div className="mb-5 flex flex-col gap-4 border-b border-white/6 pb-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex flex-wrap items-center gap-3 text-sm">
+                <span className="inline-flex items-center gap-2 font-semibold text-accent">
+                  <span className="h-2.5 w-2.5 rounded-full bg-accent" />
+                  Auction Table
+                </span>
+                <span className="text-text-muted">
+                  Lot {room.currentLot?.nominationOrder ?? room.totalPoolCount - room.pendingPlayerCount} / {room.totalPoolCount}
+                </span>
+                <span className="text-text-muted">
+                  {room.room.participantCount}/{room.room.maxParticipants} managers
+                </span>
               </div>
-            ) : null}
-          </div>
 
-          {room.room.state === "waiting" && !currentSeat ? (
-            <button
-              type="button"
-              className="btn-primary"
-              disabled={joinRoomMutation.isPending}
-              onClick={() => void joinRoomMutation.mutateAsync({ roomId: room.room.id })}
-            >
-              Join Room
-            </button>
-          ) : null}
-        </div>
-
-        <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-          <div className="stat-block">
-            <Users className="w-4 h-4 text-accent mb-1" />
-            <span className="stat-value">{room.room.participantCount}</span>
-            <span className="stat-label">Participants</span>
-          </div>
-          <div className="stat-block">
-            <Wallet className="w-4 h-4 text-accent mb-1" />
-            <span className="stat-value">{formatCrores(room.settings.purseLakhs)}</span>
-            <span className="stat-label">Starting Purse</span>
-          </div>
-          <div className="stat-block">
-            <Clock3 className="w-4 h-4 text-accent mb-1" />
-            <span className="stat-value">{room.settings.bidWindowSeconds}s</span>
-            <span className="stat-label">Bid Timer</span>
-          </div>
-          <div className="stat-block">
-            <Vote className="w-4 h-4 text-accent mb-1" />
-            <span className="stat-value">{room.pendingPlayerCount}</span>
-            <span className="stat-label">Pending Lots</span>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1.25fr,0.9fr]">
-        <div className="space-y-6">
-          <div className="card p-4 sm:p-6 space-y-4">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <h4 className="font-bold">Current Lot</h4>
-              <span className="badge">{room.room.state}</span>
-            </div>
-
-            {room.currentLot ? (
-              <>
-                <div className="rounded-2xl border border-accent/25 bg-accent/10 p-4 sm:p-5">
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                    <div>
-                      <div className="text-sm text-accent font-semibold uppercase tracking-wide">
-                        {room.currentLot.teamShortName} • {room.currentLot.role}
-                      </div>
-                      <div className="mt-1 text-2xl font-black sm:text-3xl">{room.currentLot.playerName}</div>
-                      <div className="text-sm text-text-muted mt-1">
-                        {room.currentLot.teamName} • {room.currentLot.nationality}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-xs font-bold uppercase tracking-wide text-text-muted">
-                        {room.room.state === "live" ? "Timer" : "Status"}
-                      </div>
-                      <div className="text-xl font-black text-accent sm:text-2xl">
-                        {timeLeftLabel(room.currentLot.lotEndsAt, clockNow)}
-                      </div>
-                    </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="rounded-2xl border border-border bg-surface-card/80 px-4 py-2.5">
+                  <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-text-muted">
+                    Timer
                   </div>
-
-                  <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <div>
-                      <div className="text-xs text-text-muted uppercase tracking-wide">Current Bid</div>
-                      <div className="text-2xl font-bold">
-                        {formatCrores(room.currentLot.currentBidLakhs ?? room.currentLot.openingBidLakhs)}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-text-muted uppercase tracking-wide">Leader</div>
-                      <div className="text-2xl font-bold">
-                        {room.currentLot.currentLeaderDisplayName ?? "No bids yet"}
-                      </div>
-                    </div>
+                  <div className="mt-1 text-xl font-black text-accent">
+                    {room.currentLot
+                      ? timeLeftLabel(room.currentLot.lotEndsAt, clockNow)
+                      : "Waiting"}
                   </div>
                 </div>
-
-                {currentSeat && room.room.state === "live" ? (
-                  <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-                    <button
-                      type="button"
-                      className="btn-primary"
-                      disabled={
-                        bidMutation.isPending ||
-                        !nextBidLakhs ||
-                        room.currentLot.currentLeaderUserId === currentUserId
-                      }
-                      onClick={() => nextBidLakhs && void bidMutation.mutateAsync(nextBidLakhs)}
-                    >
-                      Bid {nextBidLakhs ? formatCrores(nextBidLakhs) : ""}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-secondary"
-                      disabled={withdrawMutation.isPending || room.currentLot.currentLeaderUserId === currentUserId}
-                      onClick={() => void withdrawMutation.mutateAsync()}
-                    >
-                      Withdraw
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-secondary"
-                      disabled={skipMutation.isPending || Boolean(room.currentLot.currentBidLakhs)}
-                      onClick={() => void skipMutation.mutateAsync()}
-                    >
-                      <SkipForward className="w-4 h-4" />
-                      Skip Vote
-                    </button>
+                <div className="rounded-2xl border border-border bg-surface-card/80 px-4 py-2.5">
+                  <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-text-muted">
+                    Room
                   </div>
-                ) : null}
-
-                <div className="flex flex-wrap gap-2 text-xs">
-                  <span className="badge">
-                    Skip votes: {room.skipVoteUserIds.length}
-                  </span>
-                  <span className="badge">
-                    Withdrawn: {room.withdrawnUserIds.length}
-                  </span>
+                  <div className="mt-1 text-base font-bold">
+                    {room.room.leagueName ?? room.room.name}
+                  </div>
                 </div>
-              </>
-            ) : (
-              <div className="rounded-2xl border border-border p-5 text-text-muted">
-                {room.room.state === "completed"
-                  ? "Auction completed."
-                  : room.room.state === "waiting"
-                    ? "Waiting for all managers to ready up."
-                    : "Preparing the next player..."}
               </div>
-            )}
-          </div>
-
-          <div className="card p-4 sm:p-6 space-y-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <h4 className="font-bold">Participants</h4>
-              {room.room.state === "waiting" && currentSeat ? (
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  onClick={() => void readyMutation.mutateAsync(!currentSeat.ready)}
-                >
-                  {currentSeat.ready ? "Unready" : "Ready Up"}
-                </button>
-              ) : null}
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              {room.participants.map((participant) => (
-                <div key={participant.userId} className="rounded-2xl border border-border p-4 bg-surface-elevated">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="font-semibold">
-                        {participant.displayName} {participant.isHost ? "• Host" : ""}
-                      </div>
-                      <div className="text-xs text-text-muted mt-1">
-                        {formatCrores(participant.purseRemainingLakhs)} left • {participant.slotsRemaining} slots
-                      </div>
-                    </div>
-                    <span className={`badge ${participant.ready ? "bg-accent/15 text-accent" : ""}`}>
-                      {room.room.state === "waiting" ? (participant.ready ? "ready" : "waiting") : `OS ${participant.overseasCount}`}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="card p-4 sm:p-6 space-y-4">
-            <h4 className="font-bold">Squads & Purse</h4>
-            <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-              {room.rosters.map((roster) => (
-                <div key={roster.userId} className="rounded-2xl border border-border p-4 bg-surface-elevated">
-                  <div className="flex items-center justify-between">
-                    <div className="font-semibold">{roster.displayName}</div>
-                    <div className="text-xs text-text-muted">
-                      {formatCrores(roster.purseRemainingLakhs)} left
-                    </div>
-                  </div>
-                  <div className="text-xs text-text-muted mt-1">
-                    {roster.players.length}/{room.settings.squadSize} players • spent {formatCrores(roster.totalSpentLakhs)}
-                  </div>
-                  <div className="mt-3 max-h-52 space-y-2 overflow-y-auto">
-                    {roster.players.length ? (
-                      roster.players.map((player) => (
-                        <div key={player.playerId} className="flex items-center justify-between rounded-xl bg-surface p-2 text-sm">
-                          <div>
-                            <div className="font-medium">{player.playerName}</div>
-                            <div className="text-xs text-text-muted">
-                              {player.teamShortName} • {player.role}
+            <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+              <section className="min-w-0">
+                <div className="rounded-[2rem] border border-accent/12 bg-[linear-gradient(180deg,rgba(11,20,14,0.9),rgba(8,10,11,0.98))] p-4 shadow-[0_30px_80px_rgba(0,0,0,0.5)] sm:p-6">
+                  {room.currentLot ? (
+                    <div className="mx-auto flex max-w-4xl flex-col gap-8">
+                      <div className="mx-auto w-full max-w-3xl rounded-[1.75rem] border border-accent/14 bg-black/25 px-5 py-6 sm:px-8">
+                        <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
+                          <div className="flex h-24 w-24 items-center justify-center rounded-full border border-white/8 bg-white/[0.03] text-3xl font-black tracking-tight text-text-muted">
+                            {nameInitials(room.currentLot.playerName)}
+                          </div>
+                          <div className="min-w-0">
+                            <h3 className="truncate text-3xl font-black tracking-tight sm:text-4xl">
+                              {room.currentLot.playerName}
+                            </h3>
+                            <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-text-muted">
+                              <span className="rounded-full border border-accent/20 bg-accent/10 px-3 py-1 text-xs font-bold uppercase tracking-[0.16em] text-accent">
+                                {room.currentLot.role}
+                              </span>
+                              <span>{room.currentLot.teamShortName}</span>
+                              <span className="text-white/20">•</span>
+                              <span>{room.currentLot.nationality}</span>
+                            </div>
+                            <div className="mt-4 border-t border-white/8 pt-4 text-sm tracking-[0.18em] text-text-muted uppercase">
+                              Base Price{" "}
+                              <span className="font-black tracking-normal text-accent">
+                                {formatBidToken(room.currentLot.openingBidLakhs)}
+                              </span>
                             </div>
                           </div>
-                          <div className="font-semibold">{formatCrores(player.priceLakhs)}</div>
+                        </div>
+                      </div>
+
+                      <div className="mx-auto w-full max-w-3xl rounded-[1.75rem] border border-accent/14 bg-black/25 px-5 py-7 text-center sm:px-8">
+                        <div className="flex items-center justify-between text-sm uppercase tracking-[0.18em] text-text-muted">
+                          <span>Current Bid</span>
+                          <span>Base: {formatBidToken(room.currentLot.openingBidLakhs)}</span>
+                        </div>
+                        <div className="mt-6 text-6xl font-black tracking-tight text-accent sm:text-7xl">
+                          {formatBidToken(
+                            room.currentLot.currentBidLakhs ?? room.currentLot.openingBidLakhs
+                          )}
+                        </div>
+                        <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
+                          <span className="rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-text-muted">
+                            {room.currentLot.currentLeaderDisplayName ?? "No bids yet"}
+                          </span>
+                          <span
+                            className={`rounded-full px-4 py-2 text-sm font-semibold ${
+                              isCurrentUserLeading
+                                ? "border border-emerald-400/30 bg-emerald-500/12 text-emerald-300"
+                                : "border border-white/10 bg-white/[0.03] text-text-muted"
+                            }`}
+                          >
+                            {isCurrentUserLeading ? "You are leading" : "Bid to lead"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="mx-auto w-full max-w-3xl">
+                        <div className="rounded-[1.4rem] border border-white/8 bg-white/[0.02] px-5 py-4">
+                          {room.eventLog.length ? (
+                            <div className="text-sm text-text-muted">
+                              <span className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-accent" />
+                              {room.eventLog[room.eventLog.length - 1]?.message}
+                            </div>
+                          ) : (
+                            <div className="text-sm text-text-muted">
+                              Waiting for the next auction action.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="rounded-[1.75rem] border border-white/8 bg-black/20 p-10 text-center text-text-muted">
+                      {room.room.state === "completed"
+                        ? "Auction completed."
+                        : "Preparing the next player..."}
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <aside className="xl:sticky xl:top-6">
+                <div className="space-y-4 xl:max-h-[calc(100vh-12rem)] xl:overflow-y-auto xl:pr-1">
+                <div className="rounded-[1.75rem] border border-accent/12 bg-[linear-gradient(180deg,rgba(12,18,14,0.94),rgba(8,10,11,0.98))] p-5">
+                  <div className="text-[11px] font-bold uppercase tracking-[0.22em] text-text-muted">
+                    Your Purse
+                  </div>
+                  <div className="mt-3 text-4xl font-black tracking-tight text-accent">
+                    {currentSeat
+                      ? formatCrores(currentSeat.purseRemainingLakhs)
+                      : formatCrores(room.settings.purseLakhs)}
+                  </div>
+                  <div className="mt-2 text-sm text-text-muted">
+                    {currentSeat
+                      ? `${currentUserPurchasedCount} of ${room.settings.squadSize} slots filled`
+                      : "Spectating this auction"}
+                  </div>
+                </div>
+
+                <div className="rounded-[1.75rem] border border-accent/12 bg-[linear-gradient(180deg,rgba(12,18,14,0.94),rgba(8,10,11,0.98))] p-5">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h3 className="text-sm font-bold uppercase tracking-[0.22em] text-text-muted">
+                      Teams
+                    </h3>
+                    <span className="text-xs text-text-muted">
+                      {room.room.participantCount} managers
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {room.participants.map((participant) => {
+                      const roster = room.rosters.find(
+                        (entry) => entry.userId === participant.userId
+                      );
+                      const isCurrentUser = participant.userId === currentUserId;
+                      const isLeader =
+                        participant.userId === room.currentLot?.currentLeaderUserId;
+
+                      return (
+                        <div
+                          key={participant.userId}
+                          className={`rounded-2xl border px-4 py-3 ${
+                            isCurrentUser
+                              ? "border-accent/40 bg-accent/10"
+                              : "border-white/8 bg-white/[0.02]"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="truncate text-lg font-semibold">
+                                {participant.displayName}
+                                {isCurrentUser ? " (you)" : ""}
+                              </div>
+                              <div className="mt-2 flex flex-wrap gap-3 text-sm text-text-muted">
+                                <span>{formatCrores(participant.purseRemainingLakhs)}</span>
+                                <span>
+                                  {roster?.players.length ?? 0}/{room.settings.squadSize}
+                                </span>
+                              </div>
+                            </div>
+                            <span className="text-xs font-bold uppercase tracking-[0.18em] text-accent">
+                              {isLeader ? "Leading" : participant.isHost ? "Host" : "In"}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="rounded-[1.75rem] border border-white/8 bg-black/20 p-5">
+                  <div className="mb-3 flex items-center gap-2">
+                    <Vote className="h-4 w-4 text-accent" />
+                    <h3 className="text-sm font-bold uppercase tracking-[0.22em] text-text-muted">
+                      Bid Feed
+                    </h3>
+                  </div>
+                  <div className="max-h-56 space-y-2 overflow-y-auto pr-1">
+                    {room.recentBids.length ? (
+                      room.recentBids.map((bid) => (
+                        <div
+                          key={bid.id}
+                          className="rounded-2xl border border-white/8 bg-white/[0.02] px-4 py-3 text-sm"
+                        >
+                          <span className="font-semibold">{bid.displayName}</span>{" "}
+                          bid{" "}
+                          <span className="font-bold text-accent">
+                            {formatBidToken(bid.amountLakhs)}
+                          </span>
                         </div>
                       ))
                     ) : (
-                      <div className="text-sm text-text-muted">No players bought yet.</div>
+                      <div className="rounded-2xl border border-white/8 bg-white/[0.02] px-4 py-3 text-sm text-text-muted">
+                        No bids yet.
+                      </div>
                     )}
                   </div>
                 </div>
-              ))}
+
+                <div className="rounded-[1.75rem] border border-white/8 bg-black/20 p-5">
+                  <div className="mb-3 flex items-center gap-2">
+                    <Clock3 className="h-4 w-4 text-accent" />
+                    <h3 className="text-sm font-bold uppercase tracking-[0.22em] text-text-muted">
+                      Room Activity
+                    </h3>
+                  </div>
+                  <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                    {room.eventLog.length ? (
+                      room.eventLog.map((event) => (
+                        <div
+                          key={event.id}
+                          className="rounded-2xl border border-white/8 bg-white/[0.02] px-4 py-3"
+                        >
+                          <div className="text-sm font-medium">{event.message}</div>
+                          <div className="mt-1 text-xs text-text-muted">
+                            {new Date(event.createdAt).toLocaleTimeString()}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="rounded-2xl border border-white/8 bg-white/[0.02] px-4 py-3 text-sm text-text-muted">
+                        No activity yet.
+                      </div>
+                    )}
+                  </div>
+                </div>
+                </div>
+              </aside>
             </div>
           </div>
         </div>
 
-        <div className="space-y-6">
-          <div className="card p-4 sm:p-6 space-y-4">
-            <h4 className="font-bold">Recent Bids</h4>
-            <div className="space-y-3 max-h-80 overflow-y-auto">
-              {room.recentBids.length ? (
-                room.recentBids.map((bid) => (
-                  <div key={bid.id} className="rounded-xl border border-border p-3 bg-surface-elevated">
-                    <div className="flex items-center justify-between">
-                      <div className="font-semibold">{bid.displayName}</div>
-                      <div className="text-accent font-bold">{formatCrores(bid.amountLakhs)}</div>
-                    </div>
-                    <div className="text-xs text-text-muted mt-1">
-                      {new Date(bid.createdAt).toLocaleTimeString()}
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="text-sm text-text-muted">No bids yet.</div>
-              )}
-            </div>
-          </div>
-
-          <div className="card p-4 sm:p-6 space-y-4">
-            <h4 className="font-bold">Room Activity</h4>
-            <div className="space-y-3 max-h-96 overflow-y-auto">
-              {room.eventLog.map((event) => (
-                <div key={event.id} className="rounded-xl border border-border p-3 bg-surface-elevated">
-                  <div className="text-sm font-medium">{event.message}</div>
-                  <div className="text-xs text-text-muted mt-1">
-                    {new Date(event.createdAt).toLocaleString()}
-                  </div>
+        <div className="fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom)+5.2rem)] z-30 lg:bottom-0 lg:left-64">
+          <div className="mx-auto max-w-[1560px] px-3 pb-3 sm:px-6 lg:px-8 lg:pb-4">
+            <div className="rounded-[1.9rem] border border-accent/15 bg-[linear-gradient(180deg,rgba(15,21,17,0.96),rgba(10,12,12,0.98))] p-3 shadow-[0_-18px_50px_rgba(0,0,0,0.45)] backdrop-blur">
+              <div className="mb-3 flex items-center justify-between gap-3 px-2">
+                <div className="text-sm text-text-muted">
+                  {isCurrentUserLeading
+                    ? "You’re leading"
+                    : currentSeat
+                      ? `Need at least ${minimumQuickBidLakhs ? formatBidToken(minimumQuickBidLakhs) : formatBidToken(room.settings.basePriceLakhs)}`
+                      : "Join the room to bid"}
                 </div>
-              ))}
+                <div className="flex flex-wrap items-center gap-2 text-xs text-text-muted">
+                  <span>{room.skipVoteUserIds.length} skip votes</span>
+                  <span>•</span>
+                  <span>{room.withdrawnUserIds.length} withdrawn</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-[repeat(3,minmax(0,1fr))_220px_180px]">
+                {quickBidChoices.map((choice) => (
+                  <button
+                    key={choice.incrementLakhs}
+                    type="button"
+                    className="rounded-[1.35rem] border border-white/8 bg-white/[0.03] px-4 py-5 text-center text-lg font-black tracking-tight text-text transition-colors hover:border-accent/35 hover:bg-accent/10 disabled:cursor-not-allowed disabled:opacity-35"
+                    disabled={bidMutation.isPending || choice.disabled}
+                    onClick={() =>
+                      room.currentLot
+                        ? void bidMutation.mutateAsync({
+                            poolEntryId: room.currentLot.poolEntryId,
+                            amountLakhs: choice.amountLakhs
+                          })
+                        : undefined
+                    }
+                  >
+                    {choice.incrementLakhs === 100 ? "+₹1Cr" : `+₹${choice.incrementLakhs}L`}
+                  </button>
+                ))}
+
+                <button
+                  type="button"
+                  className="rounded-[1.35rem] border border-white/8 bg-white/[0.03] px-4 py-5 text-center text-lg font-black tracking-tight text-text transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-35"
+                  disabled={
+                    withdrawMutation.isPending ||
+                    !room.currentLot ||
+                    room.currentLot.currentLeaderUserId === currentUserId
+                  }
+                  onClick={() =>
+                    room.currentLot
+                      ? void withdrawMutation.mutateAsync(room.currentLot.poolEntryId)
+                      : undefined
+                  }
+                >
+                  Withdraw
+                </button>
+
+                <button
+                  type="button"
+                  className="rounded-[1.35rem] border border-white/8 bg-white/[0.03] px-4 py-5 text-center text-lg font-black tracking-tight text-text transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-35"
+                  disabled={
+                    skipMutation.isPending ||
+                    !room.currentLot ||
+                    Boolean(room.currentLot.currentBidLakhs)
+                  }
+                  onClick={() =>
+                    room.currentLot
+                      ? void skipMutation.mutateAsync(room.currentLot.poolEntryId)
+                      : undefined
+                  }
+                >
+                  Skip
+                </button>
+              </div>
             </div>
           </div>
         </div>
       </div>
-    </>
+    ) : null;
+
+  const roomPanel = selectedRoomQuery.isLoading ? (
+    <div className="card p-6 text-text-muted">Loading room...</div>
+  ) : room ? (
+    roomOnly ? (
+      liveAuctionTable
+    ) : (
+      <>
+        <div className="card p-4 sm:p-6 space-y-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <div className="mb-2 flex items-center gap-2">
+                <Gavel className="h-5 w-5 text-accent" />
+                <span className="text-xs font-bold uppercase tracking-widest text-accent">
+                  {room.room.leagueName ? "League Auction Room" : "Live Auction Room"}
+                </span>
+              </div>
+              <h3 className="text-xl font-bold sm:text-2xl">{room.room.name}</h3>
+              <div className="mt-2 flex flex-wrap gap-3 text-sm text-text-muted">
+                <span>{room.room.hostDisplayName} hosts</span>
+                <span>
+                  {room.room.participantCount}/{room.room.maxParticipants} participants
+                </span>
+                <span>{room.settings.squadSize} player squads</span>
+                <span>{formatCrores(room.settings.purseLakhs)} purse</span>
+              </div>
+              {room.room.inviteCode ? (
+                <div className="mt-3 text-xs font-semibold text-accent">
+                  Invite code: {room.room.inviteCode}
+                </div>
+              ) : null}
+            </div>
+
+            {room.room.state === "waiting" && !currentSeat ? (
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={joinRoomMutation.isPending}
+                onClick={() => void joinRoomMutation.mutateAsync({ roomId: room.room.id })}
+              >
+                Join Room
+              </button>
+            ) : null}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+            <div className="stat-block">
+              <Users className="mb-1 h-4 w-4 text-accent" />
+              <span className="stat-value">{room.room.participantCount}</span>
+              <span className="stat-label">Participants</span>
+            </div>
+            <div className="stat-block">
+              <Wallet className="mb-1 h-4 w-4 text-accent" />
+              <span className="stat-value">{formatCrores(room.settings.purseLakhs)}</span>
+              <span className="stat-label">Starting Purse</span>
+            </div>
+            <div className="stat-block">
+              <Clock3 className="mb-1 h-4 w-4 text-accent" />
+              <span className="stat-value">{room.settings.bidWindowSeconds}s</span>
+              <span className="stat-label">Bid Timer</span>
+            </div>
+            <div className="stat-block">
+              <Vote className="mb-1 h-4 w-4 text-accent" />
+              <span className="stat-value">{room.pendingPlayerCount}</span>
+              <span className="stat-label">Pending Lots</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1.25fr,0.9fr]">
+          <div className="space-y-6">
+            <div className="card space-y-4 p-4 sm:p-6">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <h4 className="font-bold">Current Lot</h4>
+                <span className="badge">{room.room.state}</span>
+              </div>
+
+              {room.currentLot ? (
+                <>
+                  <div className="rounded-2xl border border-accent/25 bg-accent/10 p-4 sm:p-5">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                      <div>
+                        <div className="text-sm font-semibold uppercase tracking-wide text-accent">
+                          {room.currentLot.teamShortName} • {room.currentLot.role}
+                        </div>
+                        <div className="mt-1 text-2xl font-black sm:text-3xl">
+                          {room.currentLot.playerName}
+                        </div>
+                        <div className="mt-1 text-sm text-text-muted">
+                          {room.currentLot.teamName} • {room.currentLot.nationality}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-xs font-bold uppercase tracking-wide text-text-muted">
+                          {room.room.state === "live" ? "Timer" : "Status"}
+                        </div>
+                        <div className="text-xl font-black text-accent sm:text-2xl">
+                          {timeLeftLabel(room.currentLot.lotEndsAt, clockNow)}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <div>
+                        <div className="text-xs uppercase tracking-wide text-text-muted">
+                          Current Bid
+                        </div>
+                        <div className="text-2xl font-bold">
+                          {formatCrores(
+                            room.currentLot.currentBidLakhs ??
+                              room.currentLot.openingBidLakhs
+                          )}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase tracking-wide text-text-muted">
+                          Leader
+                        </div>
+                        <div className="text-2xl font-bold">
+                          {room.currentLot.currentLeaderDisplayName ?? "No bids yet"}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {currentSeat && room.room.state === "live" && room.currentLot ? (
+                    (() => {
+                      const currentLot = room.currentLot;
+                      return (
+                    <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+                      {quickBidChoices.map((choice) => (
+                        <button
+                          key={choice.incrementLakhs}
+                          type="button"
+                          className="btn-primary"
+                          disabled={bidMutation.isPending || choice.disabled}
+                          onClick={() =>
+                            void bidMutation.mutateAsync({
+                              poolEntryId: currentLot.poolEntryId,
+                              amountLakhs: choice.amountLakhs
+                            })
+                          }
+                        >
+                          Bid{" "}
+                          {choice.incrementLakhs === 100
+                            ? "+1Cr"
+                            : `+${choice.incrementLakhs}L`}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        disabled={
+                          withdrawMutation.isPending ||
+                          currentLot.currentLeaderUserId === currentUserId
+                        }
+                        onClick={() => void withdrawMutation.mutateAsync(currentLot.poolEntryId)}
+                      >
+                        Withdraw
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        disabled={
+                          skipMutation.isPending || Boolean(currentLot.currentBidLakhs)
+                        }
+                        onClick={() => void skipMutation.mutateAsync(currentLot.poolEntryId)}
+                      >
+                        <SkipForward className="h-4 w-4" />
+                        Skip Vote
+                      </button>
+                    </div>
+                      );
+                    })()
+                  ) : null}
+
+                  <div className="flex flex-wrap gap-2 text-xs">
+                    <span className="badge">Skip votes: {room.skipVoteUserIds.length}</span>
+                    <span className="badge">Withdrawn: {room.withdrawnUserIds.length}</span>
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-2xl border border-border p-5 text-text-muted">
+                  {room.room.state === "completed"
+                    ? "Auction completed."
+                    : room.room.state === "waiting"
+                      ? "Waiting for all managers to ready up."
+                      : "Preparing the next player..."}
+                </div>
+              )}
+            </div>
+
+            <div className="card space-y-4 p-4 sm:p-6">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <h4 className="font-bold">Participants</h4>
+                {room.room.state === "waiting" && currentSeat ? (
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => void readyMutation.mutateAsync(!currentSeat.ready)}
+                  >
+                    {currentSeat.ready ? "Unready" : "Ready Up"}
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                {room.participants.map((participant) => (
+                  <div
+                    key={participant.userId}
+                    className="rounded-2xl border border-border bg-surface-elevated p-4"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="font-semibold">
+                          {participant.displayName} {participant.isHost ? "• Host" : ""}
+                        </div>
+                        <div className="mt-1 text-xs text-text-muted">
+                          {formatCrores(participant.purseRemainingLakhs)} left •{" "}
+                          {participant.slotsRemaining} slots
+                        </div>
+                      </div>
+                      <span
+                        className={`badge ${
+                          participant.ready ? "bg-accent/15 text-accent" : ""
+                        }`}
+                      >
+                        {room.room.state === "waiting"
+                          ? participant.ready
+                            ? "ready"
+                            : "waiting"
+                          : `OS ${participant.overseasCount}`}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="card space-y-4 p-4 sm:p-6">
+              <h4 className="font-bold">Squads & Purse</h4>
+              <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+                {room.rosters.map((roster) => (
+                  <div
+                    key={roster.userId}
+                    className="rounded-2xl border border-border bg-surface-elevated p-4"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="font-semibold">{roster.displayName}</div>
+                      <div className="text-xs text-text-muted">
+                        {formatCrores(roster.purseRemainingLakhs)} left
+                      </div>
+                    </div>
+                    <div className="mt-1 text-xs text-text-muted">
+                      {roster.players.length}/{room.settings.squadSize} players • spent{" "}
+                      {formatCrores(roster.totalSpentLakhs)}
+                    </div>
+                    <div className="mt-3 max-h-52 space-y-2 overflow-y-auto">
+                      {roster.players.length ? (
+                        roster.players.map((player) => (
+                          <div
+                            key={player.playerId}
+                            className="flex items-center justify-between rounded-xl bg-surface p-2 text-sm"
+                          >
+                            <div>
+                              <div className="font-medium">{player.playerName}</div>
+                              <div className="text-xs text-text-muted">
+                                {player.teamShortName} • {player.role}
+                              </div>
+                            </div>
+                            <div className="font-semibold">
+                              {formatCrores(player.priceLakhs)}
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="text-sm text-text-muted">
+                          No players bought yet.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-6">
+            <div className="card space-y-4 p-4 sm:p-6">
+              <h4 className="font-bold">Recent Bids</h4>
+              <div className="max-h-80 space-y-3 overflow-y-auto">
+                {room.recentBids.length ? (
+                  room.recentBids.map((bid) => (
+                    <div
+                      key={bid.id}
+                      className="rounded-xl border border-border bg-surface-elevated p-3"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="font-semibold">{bid.displayName}</div>
+                        <div className="font-bold text-accent">
+                          {formatCrores(bid.amountLakhs)}
+                        </div>
+                      </div>
+                      <div className="mt-1 text-xs text-text-muted">
+                        {new Date(bid.createdAt).toLocaleTimeString()}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-sm text-text-muted">No bids yet.</div>
+                )}
+              </div>
+            </div>
+
+            <div className="card space-y-4 p-4 sm:p-6">
+              <h4 className="font-bold">Room Activity</h4>
+              <div className="max-h-96 space-y-3 overflow-y-auto">
+                {room.eventLog.map((event) => (
+                  <div
+                    key={event.id}
+                    className="rounded-xl border border-border bg-surface-elevated p-3"
+                  >
+                    <div className="text-sm font-medium">{event.message}</div>
+                    <div className="mt-1 text-xs text-text-muted">
+                      {new Date(event.createdAt).toLocaleString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </>
+    )
   ) : (
     <div className="card p-6 text-text-muted">Pick an auction room to continue.</div>
   );
@@ -714,7 +1355,7 @@ export function AuctionView({
                     onChange={(event) =>
                       setFormState((current) => ({
                         ...current,
-                        bidWindowSeconds: Number(event.target.value || 8)
+                        bidWindowSeconds: Number(event.target.value || 30)
                       }))
                     }
                     className="w-full h-11 px-3 bg-surface border border-border rounded-xl focus:border-accent outline-none"

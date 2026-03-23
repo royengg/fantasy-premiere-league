@@ -1,7 +1,7 @@
 import type { RealtimeHub } from "../lib/socket.js";
 import type { AuctionService } from "./auction-service.js";
 
-const AUCTION_TICK_INTERVAL_MS = 1000;
+const AUCTION_TICK_INTERVAL_MS = 250;
 
 export class AuctionRoomScheduler {
   private intervalId?: ReturnType<typeof setInterval>;
@@ -38,9 +38,9 @@ export class AuctionRoomScheduler {
         this.realtime.emitAuctionRoomsRefresh();
       }
       for (const roomId of changedRoomIds) {
-        const participantIds = await this.auctionService.participantIds(roomId);
-        if (participantIds.length) {
-          this.realtime.emitUserRefresh(participantIds, `auction:${roomId}`);
+        const payload = await this.auctionService.getBroadcastRoom(roomId);
+        if (payload) {
+          this.realtime.emitAuctionRoom(payload.participantIds, payload.room);
         }
       }
     })()

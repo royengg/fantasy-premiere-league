@@ -25,11 +25,22 @@ export interface AuctionRuntimeRepository {
   placeAuctionBidRecord(
     userId: string,
     roomId: string,
+    poolEntryId: string,
     amountLakhs: number,
     now: string
   ): Promise<AuctionRoomDetails>;
-  withdrawFromAuctionLotRecord(userId: string, roomId: string, now: string): Promise<AuctionRoomDetails>;
-  voteSkipAuctionLotRecord(userId: string, roomId: string, now: string): Promise<AuctionRoomDetails>;
+  withdrawFromAuctionLotRecord(
+    userId: string,
+    roomId: string,
+    poolEntryId: string,
+    now: string
+  ): Promise<AuctionRoomDetails>;
+  voteSkipAuctionLotRecord(
+    userId: string,
+    roomId: string,
+    poolEntryId: string,
+    now: string
+  ): Promise<AuctionRoomDetails>;
   advanceDueAuctionRooms(now: string): Promise<string[]>;
   getAuctionParticipantIds(roomId: string): Promise<string[]>;
 }

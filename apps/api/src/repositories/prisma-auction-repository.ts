@@ -39,9 +39,11 @@ const EVENT_LOG_LIMIT = 20;
 const AUCTION_TRANSACTION_OPTIONS = {
   maxWait: 10_000,
   timeout: 30_000,
-  isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+  isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted
 } as const;
-const AUCTION_TRANSACTION_RETRY_LIMIT = 3;
+const AUCTION_ROOM_LOCK_NAMESPACE = "auction-room";
+const AUCTION_TRANSACTION_RETRY_LIMIT = 5;
+const AUCTION_TRANSACTION_RETRY_BASE_MS = 40;
 
 type DbClient = PrismaClient | Prisma.TransactionClient;
 
@@ -63,6 +65,14 @@ function earliestClosingTime(nowIso: string, seconds: number) {
   return new Date(new Date(nowIso).getTime() + seconds * 1000);
 }
 
+function formatBidToken(lakhs: number) {
+  if (lakhs >= 100) {
+    return `₹${(lakhs / 100).toFixed(lakhs % 100 === 0 ? 0 : 2)}Cr`;
+  }
+
+  return `₹${lakhs}L`;
+}
+
 function canAffordBid(
   seat: { purseRemainingLakhs: number; slotsRemaining: number },
   amountLakhs: number,
@@ -81,14 +91,226 @@ function normalizedPlayerPoolIds(ids: string[] | undefined) {
 }
 
 function isRetryableAuctionTransactionError(error: unknown) {
-  return (
-    error instanceof Prisma.PrismaClientKnownRequestError &&
-    error.code === "P2034"
-  );
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034";
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export class PrismaAuctionRepository implements AuctionRuntimeRepository {
+  private readonly roomCache = new Map<string, AuctionRoomDetails>();
+  private readonly roomTaskQueues = new Map<string, Promise<void>>();
+
   constructor(private readonly client: PrismaClient = prisma) {}
+
+  private cloneRoom(room: AuctionRoomDetails) {
+    return structuredClone(room);
+  }
+
+  private cacheRoom(room: AuctionRoomDetails) {
+    this.roomCache.set(room.room.id, this.cloneRoom(room));
+  }
+
+  private async loadAndCacheRoom(userId: string, roomId: string) {
+    const room = await this.loadAuctionRoomDetails(this.client, userId, roomId);
+    if (
+      room.room.state === "waiting" ||
+      room.room.state === "live" ||
+      room.room.state === "completed"
+    ) {
+      this.cacheRoom(room);
+    } else {
+      this.roomCache.delete(roomId);
+    }
+    return room;
+  }
+
+  private async getCachedOrFreshRoom(userId: string, roomId: string) {
+    const cachedRoom = this.roomCache.get(roomId);
+    if (cachedRoom && this.canAccessCachedRoom(userId, cachedRoom)) {
+      return this.cloneRoom(cachedRoom);
+    }
+
+    return this.loadAndCacheRoom(userId, roomId);
+  }
+
+  private canAccessCachedRoom(userId: string, room: AuctionRoomDetails) {
+    return (
+      room.room.visibility === "public" ||
+      room.room.hostUserId === userId ||
+      room.participants.some((participant) => participant.userId === userId)
+    );
+  }
+
+  private async runCachedRoomTask<T>(roomId: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.roomTaskQueues.get(roomId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.catch(() => undefined).then(() => current);
+    this.roomTaskQueues.set(roomId, tail);
+
+    await previous.catch(() => undefined);
+    try {
+      return await task();
+    } finally {
+      release();
+      if (this.roomTaskQueues.get(roomId) === tail) {
+        this.roomTaskQueues.delete(roomId);
+      }
+    }
+  }
+
+  private applyBidToCachedRoom(
+    room: AuctionRoomDetails,
+    userId: string,
+    amountLakhs: number,
+    now: string
+  ) {
+    if (!room.currentLot) {
+      return room;
+    }
+
+    const participant = room.participants.find((entry) => entry.userId === userId);
+    room.currentLot.currentBidLakhs = amountLakhs;
+    room.currentLot.currentLeaderUserId = userId;
+    room.currentLot.currentLeaderDisplayName =
+      participant?.displayName ?? room.currentLot.currentLeaderDisplayName;
+    room.room.updatedAt = now;
+    room.currentLot.lotEndsAt = new Date(
+      Math.max(
+        new Date(now).getTime(),
+        room.currentLot.lotEndsAt ? new Date(room.currentLot.lotEndsAt).getTime() : 0
+      ) + room.settings.bidExtensionSeconds * 1000
+    ).toISOString();
+    room.skipVoteUserIds = room.skipVoteUserIds.filter((entry) => entry !== userId);
+    room.withdrawnUserIds = room.withdrawnUserIds.filter((entry) => entry !== userId);
+    room.recentBids = [
+      {
+        id: randomUUID(),
+        roomId: room.room.id,
+        poolEntryId: room.currentLot.poolEntryId,
+        userId,
+        displayName: participant?.displayName ?? "Manager",
+        amountLakhs,
+        createdAt: now
+      },
+      ...room.recentBids
+    ].slice(0, RECENT_BID_LIMIT);
+    room.eventLog = [
+      ...room.eventLog,
+      {
+        id: randomUUID(),
+        type: "bid-placed" as const,
+        actorUserId: userId,
+        message: `${participant?.displayName ?? "A manager"} bid ${formatBidToken(amountLakhs)}.`,
+        createdAt: now
+      }
+    ].slice(-EVENT_LOG_LIMIT);
+    return room;
+  }
+
+  private applyWithdrawToCachedRoom(room: AuctionRoomDetails, userId: string, now: string) {
+    if (room.withdrawnUserIds.includes(userId)) {
+      return room;
+    }
+
+    const participant = room.participants.find((entry) => entry.userId === userId);
+    room.room.updatedAt = now;
+    room.skipVoteUserIds = room.skipVoteUserIds.filter((entry) => entry !== userId);
+    room.withdrawnUserIds = [...room.withdrawnUserIds, userId];
+    room.eventLog = [
+      ...room.eventLog,
+      {
+        id: randomUUID(),
+        type: "participant-withdrew" as const,
+        actorUserId: userId,
+        message: `${participant?.displayName ?? "A manager"} withdrew from the current lot.`,
+        createdAt: now
+      }
+    ].slice(-EVENT_LOG_LIMIT);
+    return room;
+  }
+
+  private applySkipToCachedRoom(room: AuctionRoomDetails, userId: string, now: string) {
+    if (room.skipVoteUserIds.includes(userId)) {
+      return room;
+    }
+
+    const participant = room.participants.find((entry) => entry.userId === userId);
+    room.room.updatedAt = now;
+    room.withdrawnUserIds = room.withdrawnUserIds.filter((entry) => entry !== userId);
+    room.skipVoteUserIds = [...room.skipVoteUserIds, userId];
+    room.eventLog = [
+      ...room.eventLog,
+      {
+        id: randomUUID(),
+        type: "skip-voted" as const,
+        actorUserId: userId,
+        message: `${participant?.displayName ?? "A manager"} voted to skip the current lot.`,
+        createdAt: now
+      }
+    ].slice(-EVENT_LOG_LIMIT);
+    return room;
+  }
+
+  private eligibleParticipantsForCachedLot(room: AuctionRoomDetails) {
+    if (!room.currentLot) {
+      return [];
+    }
+
+    return this.eligibleParticipantsForLot(
+      {
+        basePriceLakhs: room.settings.basePriceLakhs,
+        currentBidLakhs: room.currentLot.currentBidLakhs ?? null,
+        maxOverseas: room.settings.maxOverseas
+      },
+      room.participants.map((participant) => ({
+        userId: participant.userId,
+        purseRemainingLakhs: participant.purseRemainingLakhs,
+        slotsRemaining: participant.slotsRemaining,
+        overseasCount: participant.overseasCount
+      })),
+      {
+        nationality: room.currentLot.nationality
+      },
+      room.currentLot.currentBidLakhs ?? null
+    );
+  }
+
+  private roomNeedsAdvanceInCache(room: AuctionRoomDetails, now: string) {
+    if (room.room.state !== "live") {
+      return false;
+    }
+    if (!room.currentLot) {
+      return true;
+    }
+
+    const eligibleParticipants = this.eligibleParticipantsForCachedLot(room);
+    const skipVoteSet = new Set(room.skipVoteUserIds);
+    const withdrawalSet = new Set(room.withdrawnUserIds);
+    const lotExpired =
+      room.currentLot.lotEndsAt &&
+      new Date(room.currentLot.lotEndsAt).getTime() <= new Date(now).getTime();
+    const shouldCloseUnsold =
+      !room.currentLot.currentLeaderUserId &&
+      (eligibleParticipants.length === 0 ||
+        Boolean(lotExpired) ||
+        eligibleParticipants.every(
+          (participant) =>
+            skipVoteSet.has(participant.userId) || withdrawalSet.has(participant.userId)
+        ));
+    const shouldCloseSold =
+      Boolean(room.currentLot.currentLeaderUserId) &&
+      (Boolean(lotExpired) ||
+        eligibleParticipants
+          .filter((participant) => participant.userId !== room.currentLot?.currentLeaderUserId)
+          .every((participant) => withdrawalSet.has(participant.userId)));
+
+    return shouldCloseUnsold || shouldCloseSold;
+  }
 
   private async runTransaction<T>(operation: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
     let attempt = 0;
@@ -101,8 +323,32 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
         if (!isRetryableAuctionTransactionError(error) || attempt >= AUCTION_TRANSACTION_RETRY_LIMIT) {
           throw error;
         }
+        await delay(AUCTION_TRANSACTION_RETRY_BASE_MS * attempt);
       }
     }
+  }
+
+  private async runRoomTransaction<T>(
+    roomId: string,
+    operation: (tx: Prisma.TransactionClient) => Promise<T>
+  ): Promise<T> {
+    return this.runTransaction(async (tx) => {
+      await this.acquireAuctionRoomLock(tx, roomId);
+      return operation(tx);
+    });
+  }
+
+  private async acquireAuctionRoomLock(tx: Prisma.TransactionClient, roomId: string) {
+    await tx.$queryRaw<Array<{ locked: number }>>`
+      WITH room_lock AS (
+        SELECT pg_advisory_xact_lock(
+          hashtext(${AUCTION_ROOM_LOCK_NAMESPACE}),
+          hashtext(${roomId})
+        )
+      )
+      SELECT 1::int AS locked
+      FROM room_lock
+    `;
   }
 
   async listAuctionRoomsForUser(userId: string): Promise<AuctionRoomSummary[]> {
@@ -137,7 +383,7 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
       take: 30
     });
 
-    return rooms.map((room) => ({
+    const summaries: AuctionRoomSummary[] = rooms.map((room) => ({
       id: room.id,
       leagueId: room.league?.id ?? undefined,
       leagueName: room.league?.name ?? undefined,
@@ -156,9 +402,25 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
       bidWindowSeconds: room.bidWindowSeconds,
       playerPoolMode: room.playerPoolMode as AuctionRoomSummary["playerPoolMode"],
       createdAt: room.createdAt.toISOString(),
+      updatedAt: room.updatedAt.toISOString(),
       startedAt: room.startedAt?.toISOString(),
       completedAt: room.completedAt?.toISOString()
     }));
+
+    for (const cachedRoom of this.roomCache.values()) {
+      if (!this.canAccessCachedRoom(userId, cachedRoom)) {
+        continue;
+      }
+
+      const existingIndex = summaries.findIndex((entry) => entry.id === cachedRoom.room.id);
+      if (existingIndex >= 0) {
+        summaries[existingIndex] = this.cloneRoom(cachedRoom).room;
+      } else {
+        summaries.unshift(this.cloneRoom(cachedRoom).room);
+      }
+    }
+
+    return summaries;
   }
 
   async getAuctionCatalogPlayers(): Promise<AuctionCatalogPlayer[]> {
@@ -183,8 +445,7 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
   }
 
   async getAuctionRoomDetails(userId: string, roomId: string): Promise<AuctionRoomDetails> {
-    await this.advanceAuctionRoom(roomId, new Date().toISOString());
-    return this.loadAuctionRoomDetails(this.client, userId, roomId);
+    return this.getCachedOrFreshRoom(userId, roomId);
   }
 
   async createAuctionRoomRecord(
@@ -293,7 +554,7 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
       await this.logEvent(tx, roomId, "room-created", userId, `Auction room ${input.name} created.`);
     });
 
-    return this.loadAuctionRoomDetails(this.client, userId, roomId);
+    return this.loadAndCacheRoom(userId, roomId);
   }
 
   async updateAuctionRoomSettingsRecord(
@@ -301,7 +562,7 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
     roomId: string,
     input: UpdateAuctionRoomSettingsInput
   ): Promise<AuctionRoomDetails> {
-    await this.runTransaction(async (tx) => {
+    await this.runRoomTransaction(roomId, async (tx) => {
       const room = await tx.auctionRoom.findUnique({
         where: { id: roomId },
         include: {
@@ -394,12 +655,12 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
       await this.logEvent(tx, roomId, "settings-updated", userId, "Auction settings updated.");
     });
 
-    return this.loadAuctionRoomDetails(this.client, userId, roomId);
+    return this.loadAndCacheRoom(userId, roomId);
   }
 
   async joinAuctionRoomRecord(userId: string, input: JoinAuctionRoomInput): Promise<AuctionRoomDetails> {
     const roomId = await this.runTransaction(async (tx) => {
-      const room = input.roomId
+      const initialRoom = input.roomId
         ? await tx.auctionRoom.findUnique({
             where: { id: input.roomId },
             include: {
@@ -444,6 +705,33 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
               }
             }
           });
+
+      if (!initialRoom) {
+        throw new Error("Auction room not found.");
+      }
+      await this.acquireAuctionRoomLock(tx, initialRoom.id);
+      const room = await tx.auctionRoom.findUnique({
+        where: { id: initialRoom.id },
+        include: {
+          league: {
+            include: {
+              members: {
+                select: { userId: true }
+              }
+            }
+          },
+          participants: true,
+          poolEntries: {
+            include: {
+              player: {
+                select: {
+                  nationality: true
+                }
+              }
+            }
+          }
+        }
+      });
 
       if (!room) {
         throw new Error("Auction room not found.");
@@ -508,7 +796,7 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
       return room.id;
     });
 
-    return this.loadAuctionRoomDetails(this.client, userId, roomId);
+    return this.loadAndCacheRoom(userId, roomId);
   }
 
   async setAuctionReadyRecord(
@@ -516,7 +804,7 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
     roomId: string,
     ready: boolean
   ): Promise<AuctionRoomDetails> {
-    await this.runTransaction(async (tx) => {
+    await this.runRoomTransaction(roomId, async (tx) => {
       const now = new Date().toISOString();
       const room = await tx.auctionRoom.findUnique({
         where: { id: roomId }
@@ -630,7 +918,7 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
       await this.advanceAuctionRoomLocked(tx, roomId, now);
     });
 
-    return this.loadAuctionRoomDetails(this.client, userId, roomId);
+    return this.loadAndCacheRoom(userId, roomId);
   }
 
   async startAuctionRoomRecord(
@@ -638,7 +926,7 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
     roomId: string,
     now: string
   ): Promise<AuctionRoomDetails> {
-    await this.runTransaction(async (tx) => {
+    await this.runRoomTransaction(roomId, async (tx) => {
       const room = await tx.auctionRoom.findUnique({
         where: { id: roomId },
         include: {
@@ -703,246 +991,327 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
       await this.advanceAuctionRoomLocked(tx, roomId, now);
     });
 
-    return this.loadAuctionRoomDetails(this.client, userId, roomId);
+    return this.loadAndCacheRoom(userId, roomId);
   }
 
   async placeAuctionBidRecord(
     userId: string,
     roomId: string,
+    expectedPoolEntryId: string,
     amountLakhs: number,
     now: string
   ): Promise<AuctionRoomDetails> {
-    await this.runTransaction(async (tx) => {
-      await this.advanceAuctionRoomLocked(tx, roomId, now);
+    return this.runCachedRoomTask(roomId, async () => {
+      let room = await this.getCachedOrFreshRoom(userId, roomId);
+      if (this.roomNeedsAdvanceInCache(room, now)) {
+        const changed = await this.advanceAuctionRoom(roomId, now);
+        if (changed) {
+          room = await this.loadAndCacheRoom(userId, roomId);
+        }
+      }
 
-      const context = await this.loadMutableRoomContext(tx, roomId);
-      this.assertParticipantAccess(context, userId, true);
-      if (context.room.state !== "live") {
+      if (room.room.state !== "live") {
         throw new Error("Auction is not live.");
       }
-      if (!context.currentEntry || !context.currentPlayer) {
+      if (!room.currentLot) {
         throw new Error("No player is currently up for bidding.");
       }
+      if (room.currentLot.poolEntryId !== expectedPoolEntryId) {
+        throw new Error("That player is no longer the active lot.");
+      }
 
-      const seat = context.seatByUserId.get(userId);
+      const seat = room.participants.find((participant) => participant.userId === userId);
       if (!seat) {
         throw new Error("You are not part of this auction room.");
       }
       if (seat.slotsRemaining <= 0) {
         throw new Error("Your auction squad is already full.");
       }
-      if (context.room.currentLeaderUserId === userId) {
+      if (room.currentLot.currentLeaderUserId === userId) {
         throw new Error("You already have the highest bid.");
       }
       if (
-        isOverseas(context.currentPlayer.nationality) &&
-        seat.overseasCount >= context.room.maxOverseas
+        isOverseas(room.currentLot.nationality) &&
+        seat.overseasCount >= room.settings.maxOverseas
       ) {
         throw new Error("You have already reached the overseas player limit.");
       }
 
       const minBid = minimumBidLakhs(
-        context.room.basePriceLakhs,
-        context.room.currentBidLakhs ?? null
+        room.settings.basePriceLakhs,
+        room.currentLot.currentBidLakhs ?? null
       );
       if (amountLakhs < minBid) {
         throw new Error(`Minimum valid bid is ₹${(minBid / 100).toFixed(2)} crore.`);
       }
-      if (!canAffordBid(seat, amountLakhs, context.room.basePriceLakhs)) {
+      if (!canAffordBid(seat, amountLakhs, room.settings.basePriceLakhs)) {
         throw new Error("That bid would leave you without enough purse to complete your squad.");
       }
 
-      await tx.auctionSkipVote.deleteMany({
-        where: {
-          poolEntryId: context.currentEntry.id,
-          userId
-        }
-      });
-      await tx.auctionWithdrawal.deleteMany({
-        where: {
-          poolEntryId: context.currentEntry.id,
-          userId
-        }
-      });
+      await this.runRoomTransaction(roomId, async (tx) => {
+        await tx.auctionSkipVote.deleteMany({
+          where: {
+            poolEntryId: room.currentLot!.poolEntryId,
+            userId
+          }
+        });
+        await tx.auctionWithdrawal.deleteMany({
+          where: {
+            poolEntryId: room.currentLot!.poolEntryId,
+            userId
+          }
+        });
 
-      await tx.auctionBid.create({
-        data: {
-          id: randomUUID(),
+        await tx.auctionBid.create({
+          data: {
+            id: randomUUID(),
+            roomId,
+            poolEntryId: room.currentLot!.poolEntryId,
+            userId,
+            amountLakhs
+          }
+        });
+
+        const extendedFrom = Math.max(
+          new Date(now).getTime(),
+          room.currentLot?.lotEndsAt ? new Date(room.currentLot.lotEndsAt).getTime() : new Date(now).getTime()
+        );
+
+        await tx.auctionRoom.update({
+          where: { id: roomId },
+          data: {
+            currentBidLakhs: amountLakhs,
+            currentLeaderUserId: userId,
+            lotEndsAt: new Date(extendedFrom + room.settings.bidExtensionSeconds * 1000)
+          }
+        });
+
+        await this.logEvent(
+          tx,
           roomId,
-          poolEntryId: context.currentEntry.id,
+          "bid-placed",
           userId,
-          amountLakhs
-        }
+          `Bid placed for ${room.currentLot!.playerName}.`,
+          {
+            poolEntryId: room.currentLot!.poolEntryId,
+            amountLakhs
+          }
+        );
       });
 
-      const extendedFrom = Math.max(
-        new Date(now).getTime(),
-        context.room.lotEndsAt?.getTime() ?? new Date(now).getTime()
-      );
-
-      await tx.auctionRoom.update({
-        where: { id: roomId },
-        data: {
-          currentBidLakhs: amountLakhs,
-          currentLeaderUserId: userId,
-          lotEndsAt: new Date(extendedFrom + context.room.bidExtensionSeconds * 1000)
-        }
-      });
-
-      await this.logEvent(
-        tx,
-        roomId,
-        "bid-placed",
-        userId,
-        `Bid placed for ${context.currentPlayer.name}.`,
-        {
-          poolEntryId: context.currentEntry.id,
-          amountLakhs
-        }
-      );
-
-      await this.advanceAuctionRoomLocked(tx, roomId, now);
+      room = this.applyBidToCachedRoom(room, userId, amountLakhs, now);
+      this.cacheRoom(room);
+      return this.cloneRoom(room);
     });
-
-    return this.loadAuctionRoomDetails(this.client, userId, roomId);
   }
 
   async withdrawFromAuctionLotRecord(
     userId: string,
     roomId: string,
+    expectedPoolEntryId: string,
     now: string
   ): Promise<AuctionRoomDetails> {
-    await this.runTransaction(async (tx) => {
-      await this.advanceAuctionRoomLocked(tx, roomId, now);
+    return this.runCachedRoomTask(roomId, async () => {
+      let room = await this.getCachedOrFreshRoom(userId, roomId);
+      if (this.roomNeedsAdvanceInCache(room, now)) {
+        const changed = await this.advanceAuctionRoom(roomId, now);
+        if (changed) {
+          room = await this.loadAndCacheRoom(userId, roomId);
+        }
+      }
 
-      const context = await this.loadMutableRoomContext(tx, roomId);
-      this.assertParticipantAccess(context, userId, true);
-      if (context.room.state !== "live" || !context.currentEntry) {
+      if (room.room.state !== "live" || !room.currentLot) {
         throw new Error("There is no active auction lot to withdraw from.");
       }
-      if (context.room.currentLeaderUserId === userId) {
+      if (room.currentLot.poolEntryId !== expectedPoolEntryId) {
+        throw new Error("That player is no longer the active lot.");
+      }
+      if (!room.participants.some((participant) => participant.userId === userId)) {
+        throw new Error("You are not part of this auction room.");
+      }
+      if (room.currentLot.currentLeaderUserId === userId) {
         throw new Error("The current highest bidder cannot withdraw.");
       }
 
-      await tx.auctionSkipVote.deleteMany({
-        where: {
-          poolEntryId: context.currentEntry.id,
-          userId
-        }
-      });
-
-      const existing = await tx.auctionWithdrawal.findUnique({
-        where: {
-          poolEntryId_userId: {
-            poolEntryId: context.currentEntry.id,
-            userId
-          }
-        }
-      });
-
-      if (!existing) {
-        await tx.auctionWithdrawal.create({
-          data: {
-            roomId,
-            poolEntryId: context.currentEntry.id,
+      await this.runRoomTransaction(roomId, async (tx) => {
+        await tx.auctionSkipVote.deleteMany({
+          where: {
+            poolEntryId: room.currentLot!.poolEntryId,
             userId
           }
         });
 
-        await this.logEvent(
-          tx,
-          roomId,
-          "participant-withdrew",
-          userId,
-          "A participant withdrew from the current bidding round.",
-          {
-            poolEntryId: context.currentEntry.id
+        const existing = await tx.auctionWithdrawal.findUnique({
+          where: {
+            poolEntryId_userId: {
+              poolEntryId: room.currentLot!.poolEntryId,
+              userId
+            }
           }
-        );
+        });
+
+        if (!existing) {
+          await tx.auctionWithdrawal.create({
+            data: {
+              roomId,
+              poolEntryId: room.currentLot!.poolEntryId,
+              userId
+            }
+          });
+
+          await this.logEvent(
+            tx,
+            roomId,
+            "participant-withdrew",
+            userId,
+            "A participant withdrew from the current bidding round.",
+            {
+              poolEntryId: room.currentLot!.poolEntryId
+            }
+          );
+        }
+      });
+
+      room = this.applyWithdrawToCachedRoom(room, userId, now);
+      if (this.roomNeedsAdvanceInCache(room, now)) {
+        const changed = await this.advanceAuctionRoom(roomId, now);
+        if (changed) {
+          room = await this.loadAndCacheRoom(userId, roomId);
+          return this.cloneRoom(room);
+        }
       }
 
-      await this.advanceAuctionRoomLocked(tx, roomId, now);
+      this.cacheRoom(room);
+      return this.cloneRoom(room);
     });
-
-    return this.loadAuctionRoomDetails(this.client, userId, roomId);
   }
 
   async voteSkipAuctionLotRecord(
     userId: string,
     roomId: string,
+    expectedPoolEntryId: string,
     now: string
   ): Promise<AuctionRoomDetails> {
-    await this.runTransaction(async (tx) => {
-      await this.advanceAuctionRoomLocked(tx, roomId, now);
+    return this.runCachedRoomTask(roomId, async () => {
+      let room = await this.getCachedOrFreshRoom(userId, roomId);
+      if (this.roomNeedsAdvanceInCache(room, now)) {
+        const changed = await this.advanceAuctionRoom(roomId, now);
+        if (changed) {
+          room = await this.loadAndCacheRoom(userId, roomId);
+        }
+      }
 
-      const context = await this.loadMutableRoomContext(tx, roomId);
-      this.assertParticipantAccess(context, userId, true);
-      if (context.room.state !== "live" || !context.currentEntry) {
+      if (room.room.state !== "live" || !room.currentLot) {
         throw new Error("There is no active auction lot to skip.");
       }
-      if (context.room.currentBidLakhs || context.room.currentLeaderUserId) {
+      if (room.currentLot.poolEntryId !== expectedPoolEntryId) {
+        throw new Error("That player is no longer the active lot.");
+      }
+      if (!room.participants.some((participant) => participant.userId === userId)) {
+        throw new Error("You are not part of this auction room.");
+      }
+      if (room.currentLot.currentBidLakhs || room.currentLot.currentLeaderUserId) {
         throw new Error("Skip voting closes as soon as bidding starts.");
       }
 
-      await tx.auctionWithdrawal.deleteMany({
-        where: {
-          poolEntryId: context.currentEntry.id,
-          userId
-        }
-      });
-
-      const existing = await tx.auctionSkipVote.findUnique({
-        where: {
-          poolEntryId_userId: {
-            poolEntryId: context.currentEntry.id,
-            userId
-          }
-        }
-      });
-
-      if (!existing) {
-        await tx.auctionSkipVote.create({
-          data: {
-            roomId,
-            poolEntryId: context.currentEntry.id,
+      await this.runRoomTransaction(roomId, async (tx) => {
+        await tx.auctionWithdrawal.deleteMany({
+          where: {
+            poolEntryId: room.currentLot!.poolEntryId,
             userId
           }
         });
 
-        await this.logEvent(
-          tx,
-          roomId,
-          "skip-voted",
-          userId,
-          "A participant voted to skip the current player.",
-          {
-            poolEntryId: context.currentEntry.id
+        const existing = await tx.auctionSkipVote.findUnique({
+          where: {
+            poolEntryId_userId: {
+              poolEntryId: room.currentLot!.poolEntryId,
+              userId
+            }
           }
-        );
+        });
+
+        if (!existing) {
+          await tx.auctionSkipVote.create({
+            data: {
+              roomId,
+              poolEntryId: room.currentLot!.poolEntryId,
+              userId
+            }
+          });
+
+          await this.logEvent(
+            tx,
+            roomId,
+            "skip-voted",
+            userId,
+            "A participant voted to skip the current player.",
+            {
+              poolEntryId: room.currentLot!.poolEntryId
+            }
+          );
+        }
+      });
+
+      room = this.applySkipToCachedRoom(room, userId, now);
+      if (this.roomNeedsAdvanceInCache(room, now)) {
+        const changed = await this.advanceAuctionRoom(roomId, now);
+        if (changed) {
+          room = await this.loadAndCacheRoom(userId, roomId);
+          return this.cloneRoom(room);
+        }
       }
 
-      await this.advanceAuctionRoomLocked(tx, roomId, now);
+      this.cacheRoom(room);
+      return this.cloneRoom(room);
     });
-
-    return this.loadAuctionRoomDetails(this.client, userId, roomId);
   }
 
   async advanceDueAuctionRooms(now: string): Promise<string[]> {
-    const liveRooms = await this.client.auctionRoom.findMany({
-      where: {
-        state: "live",
-        OR: [{ currentPoolEntryId: null }, { lotEndsAt: { lte: new Date(now) } }]
-      },
-      select: {
-        id: true
-      }
-    });
-
     const changedRoomIds: string[] = [];
-    for (const room of liveRooms) {
-      const changed = await this.advanceAuctionRoom(room.id, now);
+    const candidateRoomIds = new Set<string>();
+
+    for (const room of this.roomCache.values()) {
+      if (room.room.state === "live" && this.roomNeedsAdvanceInCache(room, now)) {
+        candidateRoomIds.add(room.room.id);
+      }
+    }
+
+    if (candidateRoomIds.size === 0) {
+      const liveRooms = await this.client.auctionRoom.findMany({
+        where: {
+          state: "live",
+          OR: [{ currentPoolEntryId: null }, { lotEndsAt: { lte: new Date(now) } }]
+        },
+        select: {
+          id: true
+        }
+      });
+      for (const room of liveRooms) {
+        candidateRoomIds.add(room.id);
+      }
+    }
+
+    for (const roomId of candidateRoomIds) {
+      const changed = await this.runCachedRoomTask(roomId, async () => {
+        const advanced = await this.advanceAuctionRoom(roomId, now);
+        if (!advanced) {
+          return false;
+        }
+
+        const userId =
+          this.roomCache.get(roomId)?.participants[0]?.userId ??
+          (await this.getAuctionParticipantIds(roomId))[0];
+        if (!userId) {
+          this.roomCache.delete(roomId);
+          return false;
+        }
+
+        await this.loadAndCacheRoom(userId, roomId);
+        return true;
+      });
       if (changed) {
-        changedRoomIds.push(room.id);
+        changedRoomIds.push(roomId);
       }
     }
 
@@ -950,6 +1319,11 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
   }
 
   async getAuctionParticipantIds(roomId: string): Promise<string[]> {
+    const cachedRoom = this.roomCache.get(roomId);
+    if (cachedRoom) {
+      return cachedRoom.participants.map((participant) => participant.userId);
+    }
+
     const rows = await this.client.auctionParticipant.findMany({
       where: { roomId },
       select: { userId: true }
@@ -1030,21 +1404,6 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
             }
           },
           orderBy: [{ joinedAt: "asc" }]
-        },
-        poolEntries: {
-          include: {
-            player: {
-              include: {
-                team: true
-              }
-            },
-            soldTo: {
-              include: {
-                profile: true
-              }
-            }
-          },
-          orderBy: [{ nominationOrder: "asc" }]
         }
       }
     });
@@ -1059,28 +1418,82 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
       throw new Error("This auction room is private.");
     }
 
-    const recentBids = await tx.auctionBid.findMany({
-      where: { roomId },
-      include: {
-        user: {
-          include: {
-            profile: true
+    const [
+      recentBids,
+      eventRows,
+      currentEntry,
+      soldEntries,
+      selectedPlayerRows,
+      pendingPlayerCount,
+      totalPoolCount
+    ] = await Promise.all([
+      tx.auctionBid.findMany({
+        where: { roomId },
+        include: {
+          user: {
+            include: {
+              profile: true
+            }
           }
+        },
+        orderBy: [{ createdAt: "desc" }],
+        take: RECENT_BID_LIMIT
+      }),
+      tx.auctionEventLog.findMany({
+        where: { roomId },
+        orderBy: [{ createdAt: "desc" }],
+        take: EVENT_LOG_LIMIT
+      }),
+      room.currentPoolEntryId
+        ? tx.auctionPoolEntry.findUnique({
+            where: { id: room.currentPoolEntryId },
+            include: {
+              player: {
+                include: {
+                  team: true
+                }
+              },
+              soldTo: {
+                include: {
+                  profile: true
+                }
+              }
+            }
+          })
+        : Promise.resolve(null),
+      tx.auctionPoolEntry.findMany({
+        where: {
+          roomId,
+          state: "sold",
+          soldToUserId: {
+            not: null
+          }
+        },
+        include: {
+          player: {
+            include: {
+              team: true
+            }
+          }
+        },
+        orderBy: [{ nominationOrder: "asc" }]
+      }),
+      tx.auctionPoolEntry.findMany({
+        where: { roomId },
+        select: { playerId: true },
+        orderBy: [{ nominationOrder: "asc" }]
+      }),
+      tx.auctionPoolEntry.count({
+        where: {
+          roomId,
+          state: "pending"
         }
-      },
-      orderBy: [{ createdAt: "desc" }],
-      take: RECENT_BID_LIMIT
-    });
+      }),
+      tx.auctionPoolEntry.count({
+        where: { roomId }
+      })
+    ]);
 
-    const eventRows = await tx.auctionEventLog.findMany({
-      where: { roomId },
-      orderBy: [{ createdAt: "desc" }],
-      take: EVENT_LOG_LIMIT
-    });
-
-    const currentEntry = room.currentPoolEntryId
-      ? room.poolEntries.find((entry) => entry.id === room.currentPoolEntryId)
-      : undefined;
     const currentLot = currentEntry
       ? this.toAuctionLot(
           currentEntry,
@@ -1118,7 +1531,6 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
       currentLot.soldToDisplayName = participantDisplayNames.get(currentLot.soldToUserId);
     }
 
-    const soldEntries = room.poolEntries.filter((entry) => entry.state === "sold" && entry.soldToUserId);
     const rosterMap = new Map<string, AuctionRoster>();
     for (const participant of room.participants) {
       rosterMap.set(participant.userId, {
@@ -1167,6 +1579,7 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
         bidWindowSeconds: room.bidWindowSeconds,
         playerPoolMode: room.playerPoolMode as AuctionRoomSummary["playerPoolMode"],
         createdAt: room.createdAt.toISOString(),
+        updatedAt: room.updatedAt.toISOString(),
         startedAt: room.startedAt?.toISOString(),
         completedAt: room.completedAt?.toISOString()
       },
@@ -1202,9 +1615,9 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
         createdAt: bid.createdAt.toISOString()
       })),
       rosters: [...rosterMap.values()],
-      selectedPlayerIds: room.poolEntries.map((entry) => entry.playerId),
-      pendingPlayerCount: room.poolEntries.filter((entry) => entry.state === "pending").length,
-      totalPoolCount: room.poolEntries.length,
+      selectedPlayerIds: selectedPlayerRows.map((entry) => entry.playerId),
+      pendingPlayerCount,
+      totalPoolCount,
       skipVoteUserIds: currentLotSkipVotes.map((row) => row.userId),
       withdrawnUserIds: currentLotWithdrawals.map((row) => row.userId),
       eventLog: eventRows
@@ -1217,6 +1630,31 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
         }))
         .reverse()
     };
+  }
+
+  private async roomNeedsAdvance(
+    tx: Prisma.TransactionClient,
+    roomId: string,
+    now: string
+  ) {
+    const room = await tx.auctionRoom.findUnique({
+      where: { id: roomId },
+      select: {
+        state: true,
+        currentPoolEntryId: true,
+        lotEndsAt: true
+      }
+    });
+
+    if (!room || room.state !== "live") {
+      return false;
+    }
+
+    if (!room.currentPoolEntryId) {
+      return true;
+    }
+
+    return Boolean(room.lotEndsAt && room.lotEndsAt.getTime() <= new Date(now).getTime());
   }
 
   private toAuctionLot(
@@ -1273,7 +1711,8 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
   }
 
   private async advanceAuctionRoom(roomId: string, now: string) {
-    return this.runTransaction(
+    return this.runRoomTransaction(
+      roomId,
       (tx) => this.advanceAuctionRoomLocked(tx, roomId, now),
     );
   }
@@ -1282,6 +1721,7 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
     let changed = false;
 
     while (true) {
+      const actionNow = new Date().toISOString();
       const context = await this.loadMutableRoomContext(tx, roomId);
       if (!context.room || context.room.state !== "live") {
         return changed;
@@ -1293,7 +1733,7 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
             where: { id: roomId },
             data: {
               state: "completed",
-              completedAt: new Date(now)
+              completedAt: new Date(actionNow)
             }
           });
           await this.logEvent(tx, roomId, "auction-completed", null, "Auction completed.");
@@ -1318,11 +1758,12 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
           );
 
           if (eligibleParticipants.length === 0) {
+            const closeNow = new Date().toISOString();
             await tx.auctionPoolEntry.update({
               where: { id: entry.id },
               data: {
                 state: "unsold",
-                closedAt: new Date(now)
+                closedAt: new Date(closeNow)
               }
             });
             await this.logEvent(
@@ -1337,11 +1778,12 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
             continue;
           }
 
+          const nominationNow = new Date().toISOString();
           await tx.auctionPoolEntry.update({
             where: { id: entry.id },
             data: {
               state: "active",
-              nominatedAt: new Date(now)
+              nominatedAt: new Date(nominationNow)
             }
           });
           await tx.auctionRoom.update({
@@ -1350,8 +1792,8 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
               currentPoolEntryId: entry.id,
               currentBidLakhs: null,
               currentLeaderUserId: null,
-              lotOpenedAt: new Date(now),
-              lotEndsAt: earliestClosingTime(now, context.room.bidWindowSeconds)
+              lotOpenedAt: new Date(nominationNow),
+              lotEndsAt: earliestClosingTime(nominationNow, context.room.bidWindowSeconds)
             }
           });
           await this.logEvent(
@@ -1375,7 +1817,7 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
           where: { id: roomId },
           data: {
             state: "completed",
-            completedAt: new Date(now)
+            completedAt: new Date(actionNow)
           }
         });
         await this.logEvent(tx, roomId, "auction-completed", null, "Auction completed.");
@@ -1391,7 +1833,8 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
       const skipVoteSet = new Set(context.skipVotes.map((vote) => vote.userId));
       const withdrawalSet = new Set(context.withdrawals.map((vote) => vote.userId));
       const lotExpired =
-        context.room.lotEndsAt && new Date(context.room.lotEndsAt).getTime() <= new Date(now).getTime();
+        context.room.lotEndsAt &&
+        new Date(context.room.lotEndsAt).getTime() <= new Date(actionNow).getTime();
 
       const shouldCloseUnsold =
         !context.room.currentLeaderUserId &&
@@ -1418,6 +1861,7 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
         if (!leaderSeat) {
           throw new Error("Auction leader is no longer part of the room.");
         }
+        const soldNow = new Date().toISOString();
 
         await tx.auctionPoolEntry.update({
           where: { id: context.currentEntry.id },
@@ -1425,7 +1869,7 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
             state: "sold",
             soldToUserId: context.room.currentLeaderUserId,
             soldPriceLakhs: context.room.currentBidLakhs,
-            closedAt: new Date(now)
+            closedAt: new Date(soldNow)
           }
         });
 
@@ -1478,11 +1922,12 @@ export class PrismaAuctionRepository implements AuctionRuntimeRepository {
         continue;
       }
 
+      const unsoldNow = new Date().toISOString();
       await tx.auctionPoolEntry.update({
         where: { id: context.currentEntry.id },
         data: {
           state: "unsold",
-          closedAt: new Date(now)
+          closedAt: new Date(unsoldNow)
         }
       });
       await tx.auctionRoom.update({

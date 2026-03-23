@@ -198,6 +198,7 @@ export interface AuctionRoomSummary {
   bidWindowSeconds: number;
   playerPoolMode: AuctionPlayerPoolMode;
   createdAt: string;
+  updatedAt: string;
   startedAt?: string;
   completedAt?: string;
 }

@@ -2,7 +2,7 @@ import { Server as HttpServer } from "node:http";
 
 import { Server as SocketServer } from "socket.io";
 
-import type { LeaderboardEntry } from "@fantasy-cricket/types";
+import type { AuctionRoomDetails, LeaderboardEntry } from "@fantasy-cricket/types";
 import { isAllowedOrigin } from "./cors.js";
 import type { AuthService } from "../services/auth-service.js";
 
@@ -10,6 +10,7 @@ export interface RealtimeHub {
   emitLeaderboard: (userIds: string[], contestId: string, leaderboard: LeaderboardEntry[]) => void;
   emitLeagueActivity: (userIds: string[], leagueId: string, message: string) => void;
   emitUserRefresh: (userIds: string[], reason: string) => void;
+  emitAuctionRoom: (userIds: string[], room: AuctionRoomDetails) => void;
   emitAuctionRoomsRefresh: () => void;
 }
 
@@ -83,6 +84,9 @@ export function createRealtimeHub(
     },
     emitUserRefresh: (userIds, reason) => {
       emitToUsers(userIds, "user:refresh", { reason, timestamp: new Date().toISOString() });
+    },
+    emitAuctionRoom: (userIds, room) => {
+      emitToUsers(userIds, "auction:room", room);
     },
     emitAuctionRoomsRefresh: () => {
       io.to("authenticated").emit("auction:rooms", {

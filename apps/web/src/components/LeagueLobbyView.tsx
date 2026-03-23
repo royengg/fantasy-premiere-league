@@ -11,8 +11,12 @@ import {
 } from "lucide-react";
 
 import { ApiError, createApiClient } from "@fantasy-cricket/api-client";
-import type { League } from "@fantasy-cricket/types";
+import type { AuctionRoomDetails, League } from "@fantasy-cricket/types";
 
+import {
+  updateAuctionRoomInCache,
+  writeAuctionRoomToCache,
+} from "../lib/auction-query-cache";
 import { AuctionView } from "./AuctionView";
 
 type ApiClient = ReturnType<typeof createApiClient>;
@@ -32,6 +36,10 @@ function formatSeats(current: number, max: number) {
   return `${current}/${max}`;
 }
 
+function lobbyRefetchInterval(room: AuctionRoomDetails | undefined) {
+  return room?.room.state === "waiting" ? 1000 : false;
+}
+
 export function LeagueLobbyView({
   api,
   currentUserId,
@@ -43,6 +51,8 @@ export function LeagueLobbyView({
   const roomsQuery = useQuery({
     queryKey: ["auction-rooms"],
     queryFn: () => api.getAuctionRooms(),
+    refetchInterval: 2000,
+    refetchIntervalInBackground: true,
   });
 
   const roomSummary = useMemo(
@@ -54,6 +64,11 @@ export function LeagueLobbyView({
     queryKey: ["auction-room", roomSummary?.id],
     queryFn: () => api.getAuctionRoom(roomSummary!.id),
     enabled: Boolean(roomSummary?.id),
+    refetchInterval: ({ state }) =>
+      lobbyRefetchInterval(state.data as AuctionRoomDetails | undefined),
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
   });
 
   const createRoomMutation = useMutation({
@@ -64,17 +79,14 @@ export function LeagueLobbyView({
         visibility: league.visibility,
         maxParticipants: league.maxMembers,
         squadSize: league.squadSize,
-        bidWindowSeconds: 12,
+        bidWindowSeconds: 30,
         bidExtensionSeconds: 5,
         playerPoolMode: "all",
       }),
-    onSuccess: async (room) => {
+    onSuccess: (room) => {
       setStatus("League lobby created.");
-      await queryClient.invalidateQueries({ queryKey: ["auction-rooms"] });
-      await queryClient.invalidateQueries({
-        queryKey: ["auction-room", room.room.id],
-      });
-      await queryClient.invalidateQueries({ queryKey: ["leagues"] });
+      writeAuctionRoomToCache(queryClient, room);
+      void queryClient.invalidateQueries({ queryKey: ["leagues"] });
     },
     onError: (error) => {
       setStatus(
@@ -87,13 +99,10 @@ export function LeagueLobbyView({
 
   const joinRoomMutation = useMutation({
     mutationFn: (roomId: string) => api.joinAuctionRoom({ roomId }),
-    onSuccess: async (room) => {
+    onSuccess: (room) => {
       setStatus("Joined the league lobby.");
-      await queryClient.invalidateQueries({
-        queryKey: ["auction-room", room.room.id],
-      });
-      await queryClient.invalidateQueries({ queryKey: ["auction-rooms"] });
-      await queryClient.invalidateQueries({ queryKey: ["leagues"] });
+      writeAuctionRoomToCache(queryClient, room);
+      void queryClient.invalidateQueries({ queryKey: ["leagues"] });
     },
     onError: (error) => {
       setStatus(
@@ -104,13 +113,41 @@ export function LeagueLobbyView({
 
   const readyMutation = useMutation({
     mutationFn: (ready: boolean) => api.setAuctionReady(roomSummary!.id, ready),
-    onSuccess: async (room) => {
-      await queryClient.invalidateQueries({
-        queryKey: ["auction-room", room.room.id],
+    onMutate: async (ready) => {
+      if (!roomSummary?.id) {
+        return { previousRoom: undefined as AuctionRoomDetails | undefined };
+      }
+
+      await queryClient.cancelQueries({
+        queryKey: ["auction-room", roomSummary.id],
       });
-      await queryClient.invalidateQueries({ queryKey: ["auction-rooms"] });
+
+      const previousRoom = queryClient.getQueryData<AuctionRoomDetails>([
+        "auction-room",
+        roomSummary.id,
+      ]);
+
+      updateAuctionRoomInCache(queryClient, roomSummary.id, (room) => ({
+        ...room,
+        participants: room.participants.map((participant) =>
+          participant.userId === currentUserId
+            ? { ...participant, ready }
+            : participant,
+        ),
+      }));
+
+      return { previousRoom };
     },
-    onError: (error) => {
+    onSuccess: (room) => {
+      writeAuctionRoomToCache(queryClient, room);
+    },
+    onError: (error, _ready, context) => {
+      if (roomSummary?.id && context?.previousRoom) {
+        queryClient.setQueryData(
+          ["auction-room", roomSummary.id],
+          context.previousRoom,
+        );
+      }
       setStatus(
         isApiError(error) ? error.message : "Could not update ready state.",
       );
@@ -172,6 +209,13 @@ export function LeagueLobbyView({
   const currentSeat = roomQuery.data?.participants.find(
     (participant) => participant.userId === currentUserId,
   );
+  const activeRoomId = roomQuery.data?.room.id ?? roomSummary?.id;
+  const shouldOpenAuction =
+    roomQuery.data?.room.state !== undefined
+      ? roomQuery.data.room.state !== "waiting"
+      : roomSummary?.state !== undefined
+        ? roomSummary.state !== "waiting"
+        : false;
   const readyCount =
     roomQuery.data?.participants.filter((participant) => participant.ready)
       .length ?? 0;
@@ -214,13 +258,13 @@ export function LeagueLobbyView({
     await deleteLeagueMutation.mutateAsync();
   };
 
-  if (roomQuery.data?.room.state && roomQuery.data.room.state !== "waiting") {
+  if (shouldOpenAuction && activeRoomId) {
     return (
       <AuctionView
         api={api}
         currentUserId={currentUserId}
         league={league}
-        fixedRoomId={roomQuery.data.room.id}
+        fixedRoomId={activeRoomId}
         roomOnly
       />
     );
