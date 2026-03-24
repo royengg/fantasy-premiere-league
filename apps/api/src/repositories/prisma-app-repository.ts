@@ -10,31 +10,22 @@ import {
 import { calculateRosterPoints, canSubmitPrediction, settlePredictionAnswer } from "@fantasy-cricket/scoring";
 import type {
   BuildRosterInput,
-  Badge,
   BootstrapPayload,
   Contest,
   ContestPagePayload,
   CosmeticItem,
   CosmeticUnlock,
   DashboardPayload,
-  FantasyScoreEvent,
-  Friendship,
   HomePagePayload,
   InventoryPagePayload,
-  Invite,
   LeaderboardEntry,
   League,
-  Match,
-  Player,
-  PlayerMatchStatLine,
   PredictionAnswer,
   PredictionFeedPayload,
   PredictionPagePayload,
-  PredictionQuestion,
   PredictionResult,
   Profile,
   Roster,
-  Team,
   TeamWithPlayers,
   User,
   UserInventory,
@@ -50,812 +41,127 @@ import type {
 import type { AppStore } from "../data/store.js";
 import { loadEnv } from "../lib/env.js";
 import { prisma } from "../lib/prisma.js";
-import { Prisma, type PrismaClient } from "../generated/prisma/client";
+import { Prisma, type PrismaClient } from "../generated/prisma/client.js";
 import type {
   ProviderStateCreateInput,
   ProviderStateModel,
   ProviderStateUpdateInput
-} from "../generated/prisma/models/ProviderState";
+} from "../generated/prisma/models/ProviderState.js";
 import type {
   AuthRuntimeRepository,
   GameRuntimeRepository,
   ProviderStateSnapshot
 } from "./runtime-repository.js";
 import type { ProviderSyncSnapshot } from "../services/provider-sync-service.js";
+import { PrismaAuthRepository } from "./prisma-auth-repository.js";
+import {
+  asJson,
+  buildLeaderboardEntries,
+  DASHBOARD_LEADERBOARD_LIMIT,
+  DASHBOARD_LEAGUE_LIMIT,
+  DASHBOARD_PREDICTION_LIMIT,
+  DASHBOARD_PRIVATE_CONTEST_LIMIT,
+  DASHBOARD_PUBLIC_CONTEST_LIMIT,
+  DEFAULT_LEAGUE_SQUAD_SIZE,
+  friendshipPairKey,
+  inputJson,
+  mapAnswers,
+  mapBadges,
+  mapContests,
+  mapCosmetics,
+  mapFriendships,
+  mapInventories,
+  mapInvites,
+  mapLeaderboard,
+  mapLeagues,
+  mapMatches,
+  mapPlayers,
+  mapPlayerMatchStatLines,
+  mapProfiles,
+  mapQuestions,
+  mapResults,
+  mapRosters,
+  mapScoreEvents,
+  mapTeams,
+  mapUnlocks,
+  mapUsers,
+  mapXpTransactions,
+  normalizeQuestionsForDisplay,
+  preferCanonicalTeamsWithPlayers,
+  preferredPublicContests,
+  preferredQuestions,
+  providerBudgetDayKey,
+  SNAPSHOT_TRANSACTION_OPTIONS,
+  toDate,
+  toLeagueDto,
+  toRosterDto,
+  withLeaderboardDisplayNames
+} from "./prisma-helpers.js";
 
-const SNAPSHOT_TRANSACTION_OPTIONS = {
-  maxWait: 15_000,
-  timeout: 180_000
-} as const;
-const DASHBOARD_PUBLIC_CONTEST_LIMIT = 8;
-const DASHBOARD_PRIVATE_CONTEST_LIMIT = 8;
-const DASHBOARD_LEAGUE_LIMIT = 20;
-const DASHBOARD_PREDICTION_LIMIT = 12;
-const DASHBOARD_LEADERBOARD_LIMIT = 25;
-const DEFAULT_LEAGUE_SQUAD_SIZE = 13;
 const env = loadEnv();
-
-function asJson<T>(value: Prisma.JsonValue | null): T {
-  return (value ?? null) as T;
-}
-
-function inputJson(value: unknown): Prisma.InputJsonValue {
-  return value as Prisma.InputJsonValue;
-}
-
-function toDate(value: string | undefined | null): Date | null {
-  if (!value) {
-    return null;
-  }
-
-  return new Date(value);
-}
-
-function toDateString(value: Date | null): string | undefined {
-  return value?.toISOString();
-}
-
-function providerBudgetDayKey(now = new Date()) {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kolkata",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).format(now);
-}
-
-function mapUsers(rows: Array<{ id: string; email: string; name: string; isAdmin: boolean; createdAt: Date }>): User[] {
-  return rows.map((row) => ({
-    id: row.id,
-    email: row.email,
-    name: row.name,
-    isAdmin: row.isAdmin,
-    createdAt: row.createdAt.toISOString()
-  }));
-}
-
-function mapProfiles(rows: Array<{ userId: string; username: string; bio: string | null; favoriteTeamId: string | null; xp: number; level: number; streak: number; onboardingCompleted: boolean; equippedCosmetics: Prisma.JsonValue }>): Profile[] {
-  return rows.map((row) => ({
-    userId: row.userId,
-    username: row.username,
-    bio: row.bio ?? undefined,
-    favoriteTeamId: row.favoriteTeamId ?? undefined,
-    xp: row.xp,
-    level: row.level,
-    streak: row.streak,
-    onboardingCompleted: row.onboardingCompleted,
-    equippedCosmetics: asJson<Profile["equippedCosmetics"]>(row.equippedCosmetics)
-  }));
-}
-
-function mapFriendships(rows: Array<{ id: string; requesterId: string; addresseeId: string; status: string; createdAt: Date }>): Friendship[] {
-  return rows.map((row) => ({
-    id: row.id,
-    requesterId: row.requesterId,
-    addresseeId: row.addresseeId,
-    status: row.status as Friendship["status"],
-    createdAt: row.createdAt.toISOString()
-  }));
-}
-
-function mapInvites(rows: Array<{ id: string; leagueId: string; code: string; createdBy: string; createdAt: Date; expiresAt: Date | null }>): Invite[] {
-  return rows.map((row) => ({
-    id: row.id,
-    leagueId: row.leagueId,
-    code: row.code,
-    createdBy: row.createdBy,
-    createdAt: row.createdAt.toISOString(),
-    expiresAt: toDateString(row.expiresAt)
-  }));
-}
-
-function mapTeams(rows: Array<{ id: string; name: string; shortName: string; city: string }>): Team[] {
-  return rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    shortName: row.shortName,
-    city: row.city
-  }));
-}
-
-function mapPlayers(rows: Array<{ id: string; name: string; teamId: string; role: string; rating: number; nationality: string; selectionPercent: number }>): Player[] {
-  return rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    teamId: row.teamId,
-    role: row.role as Player["role"],
-    rating: row.rating,
-    nationality: row.nationality as Player["nationality"],
-    selectionPercent: row.selectionPercent
-  }));
-}
-
-function preferCanonicalTeamsWithPlayers(
-  rows: Array<{
-    id: string;
-    name: string;
-    shortName: string;
-    city: string;
-    players: Array<{
-      id: string;
-      name: string;
-      teamId: string;
-      role: string;
-      rating: number;
-      nationality: string;
-      selectionPercent: number;
-    }>;
-  }>
-): TeamWithPlayers[] {
-  const canonicalByShortName = new Map<string, TeamWithPlayers>();
-
-  for (const row of rows) {
-    const normalizedTeam = normalizeIplTeam(mapTeams([row])[0]);
-    const players = mapPlayers(row.players);
-    const nextTeam: TeamWithPlayers = {
-      ...normalizedTeam,
-      players
-    };
-
-    const current = canonicalByShortName.get(nextTeam.shortName);
-    if (!current) {
-      canonicalByShortName.set(nextTeam.shortName, nextTeam);
-      continue;
-    }
-
-    const shouldReplace =
-      nextTeam.players.length > current.players.length ||
-      (nextTeam.players.length === current.players.length &&
-        current.id.startsWith("team-") &&
-        nextTeam.id.startsWith("provider:"));
-
-    if (shouldReplace) {
-      canonicalByShortName.set(nextTeam.shortName, nextTeam);
-    }
-  }
-
-  return [...canonicalByShortName.values()].sort((left, right) =>
-    left.name.localeCompare(right.name)
-  );
-}
-
-function mapMatches(rows: Array<{ id: string; homeTeamId: string; awayTeamId: string; startsAt: Date; venue: string; state: string }>): Match[] {
-  return rows.map((row) => ({
-    id: row.id,
-    homeTeamId: row.homeTeamId,
-    awayTeamId: row.awayTeamId,
-    startsAt: row.startsAt.toISOString(),
-    venue: row.venue,
-    state: row.state as Match["state"]
-  }));
-}
-
-function mapContests(rows: Array<{ id: string; name: string; kind: string; matchId: string; leagueId: string | null; rosterRules: Prisma.JsonValue; lockTime: Date; rewards: Prisma.JsonValue }>): Contest[] {
-  return rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    kind: row.kind as Contest["kind"],
-    matchId: row.matchId,
-    leagueId: row.leagueId ?? undefined,
-    rosterRules: asJson<Contest["rosterRules"]>(row.rosterRules),
-    lockTime: row.lockTime.toISOString(),
-    rewards: asJson<Contest["rewards"]>(row.rewards)
-  }));
-}
-
-function mapLeagues(rows: Array<{
-  id: string;
-  name: string;
-  description: string | null;
-  visibility: string;
-  createdBy: string;
-  inviteCode: string;
-  bannerStyle: string;
-  maxMembers: number;
-  squadSize: number;
-  members: Array<{ userId: string }>;
-  contests: Array<{ id: string }>;
-  auctionRooms?: Array<{ id: string }>;
-}>): League[] {
-  return rows.map((row) => toLeagueDto(row));
-}
-
-function mapRosters(rows: Array<{ id: string; contestId: string; userId: string; players: Prisma.JsonValue; captainPlayerId: string; viceCaptainPlayerId: string; submittedAt: Date; locked: boolean }>): Roster[] {
-  return rows.map((row) => toRosterDto(row));
-}
-
-function mapScoreEvents(rows: Array<{ id: string; matchId: string; playerId: string; label: string; points: number; createdAt: Date }>): FantasyScoreEvent[] {
-  return rows.map((row) => ({
-    id: row.id,
-    matchId: row.matchId,
-    playerId: row.playerId,
-    label: row.label,
-    points: row.points,
-    createdAt: row.createdAt.toISOString()
-  }));
-}
-
-function mapPlayerMatchStatLines(rows: Array<{
-  id: string;
-  matchId: string;
-  playerId: string;
-  runs: number;
-  balls: number;
-  fours: number;
-  sixes: number;
-  wickets: number;
-  maidens: number;
-  dotBalls: number;
-  catches: number;
-  stumpings: number;
-  runOuts: number;
-  runsConceded: number;
-  ballsBowled: number;
-  battingStrikeRate: number | null;
-  bowlingEconomy: number | null;
-  didPlay: boolean;
-  didBat: boolean;
-  didBowl: boolean;
-  didField: boolean;
-  sourceUpdatedAt: Date;
-}>): PlayerMatchStatLine[] {
-  return rows.map((row) => ({
-    id: row.id,
-    matchId: row.matchId,
-    playerId: row.playerId,
-    runs: row.runs,
-    balls: row.balls,
-    fours: row.fours,
-    sixes: row.sixes,
-    wickets: row.wickets,
-    maidens: row.maidens,
-    dotBalls: row.dotBalls,
-    catches: row.catches,
-    stumpings: row.stumpings,
-    runOuts: row.runOuts,
-    runsConceded: row.runsConceded,
-    ballsBowled: row.ballsBowled,
-    battingStrikeRate: row.battingStrikeRate ?? undefined,
-    bowlingEconomy: row.bowlingEconomy ?? undefined,
-    didPlay: row.didPlay,
-    didBat: row.didBat,
-    didBowl: row.didBowl,
-    didField: row.didField,
-    sourceUpdatedAt: row.sourceUpdatedAt.toISOString()
-  }));
-}
-
-function mapLeaderboard(rows: Array<{ id: string; contestId: string; userId: string; points: number; rank: number; previousRank: number; trend: string; projectedPoints: number | null }>): LeaderboardEntry[] {
-  return rows.map((row) => ({
-    id: row.id,
-    contestId: row.contestId,
-    userId: row.userId,
-    points: row.points,
-    rank: row.rank,
-    previousRank: row.previousRank,
-    trend: row.trend as LeaderboardEntry["trend"],
-    projectedPoints: row.projectedPoints ?? undefined
-  }));
-}
-
-function withLeaderboardDisplayNames(
-  entries: LeaderboardEntry[],
-  profiles: Profile[],
-  users: User[]
-): LeaderboardEntry[] {
-  const displayNameByUserId = new Map<string, string>();
-
-  for (const profile of profiles) {
-    displayNameByUserId.set(profile.userId, profile.username);
-  }
-
-  for (const user of users) {
-    if (!displayNameByUserId.has(user.id)) {
-      displayNameByUserId.set(user.id, user.name);
-    }
-  }
-
-  return entries.map((entry) => ({
-    ...entry,
-    displayName: displayNameByUserId.get(entry.userId)
-  }));
-}
-
-function mapQuestions(rows: Array<{ id: string; matchId: string; prompt: string; category: string; options: Prisma.JsonValue; locksAt: Date; resolvesAt: Date; state: string; xpReward: number; badgeRewardId: string | null; cosmeticRewardId: string | null }>): PredictionQuestion[] {
-  return rows.map((row) => ({
-    id: row.id,
-    matchId: row.matchId,
-    prompt: row.prompt,
-    category: row.category as PredictionQuestion["category"],
-    options: asJson<PredictionQuestion["options"]>(row.options),
-    locksAt: row.locksAt.toISOString(),
-    resolvesAt: row.resolvesAt.toISOString(),
-    state: row.state as PredictionQuestion["state"],
-    xpReward: row.xpReward,
-    badgeRewardId: row.badgeRewardId ?? undefined,
-    cosmeticRewardId: row.cosmeticRewardId ?? undefined
-  }));
-}
-
-function mapAnswers(rows: Array<{ id: string; questionId: string; userId: string; optionId: string; submittedAt: Date }>): PredictionAnswer[] {
-  return rows.map((row) => ({
-    id: row.id,
-    questionId: row.questionId,
-    userId: row.userId,
-    optionId: row.optionId,
-    submittedAt: row.submittedAt.toISOString()
-  }));
-}
-
-function mapResults(rows: Array<{ id: string; questionId: string; userId: string; correctOptionId: string; awardedXp: number; awardedBadgeId: string | null; awardedCosmeticId: string | null; streak: number; settledAt: Date }>): PredictionResult[] {
-  return rows.map((row) => ({
-    id: row.id,
-    questionId: row.questionId,
-    userId: row.userId,
-    correctOptionId: row.correctOptionId,
-    awardedXp: row.awardedXp,
-    awardedBadgeId: row.awardedBadgeId ?? undefined,
-    awardedCosmeticId: row.awardedCosmeticId ?? undefined,
-    streak: row.streak,
-    settledAt: row.settledAt.toISOString()
-  }));
-}
-
-function mapCosmetics(rows: Array<{ id: string; name: string; description: string; category: string; rarity: string; themeToken: string; gameplayAffecting: boolean; transferable: boolean; redeemable: boolean; resaleValue: number }>): CosmeticItem[] {
-  return rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    description: row.description,
-    category: row.category as CosmeticItem["category"],
-    rarity: row.rarity as CosmeticItem["rarity"],
-    themeToken: row.themeToken,
-    gameplayAffecting: row.gameplayAffecting as false,
-    transferable: row.transferable as false,
-    redeemable: row.redeemable as false,
-    resaleValue: row.resaleValue
-  }));
-}
-
-function mapUnlocks(rows: Array<{ id: string; userId: string; cosmeticId: string; source: string; unlockedAt: Date }>): CosmeticUnlock[] {
-  return rows.map((row) => ({
-    id: row.id,
-    userId: row.userId,
-    cosmeticId: row.cosmeticId,
-    source: row.source as CosmeticUnlock["source"],
-    unlockedAt: row.unlockedAt.toISOString()
-  }));
-}
-
-function mapInventories(rows: Array<{ userId: string; cosmeticIds: string[]; badgeIds: string[]; equipped: Prisma.JsonValue }>): UserInventory[] {
-  return rows.map((row) => ({
-    userId: row.userId,
-    cosmeticIds: row.cosmeticIds,
-    badgeIds: row.badgeIds,
-    equipped: asJson<UserInventory["equipped"]>(row.equipped)
-  }));
-}
-
-function mapBadges(rows: Array<{ id: string; label: string; description: string; category: string; seasonId: string | null }>): Badge[] {
-  return rows.map((row) => ({
-    id: row.id,
-    label: row.label,
-    description: row.description,
-    category: row.category as Badge["category"],
-    seasonId: row.seasonId ?? undefined
-  }));
-}
-
-function mapXpTransactions(rows: Array<{ id: string; userId: string; source: string; amount: number; description: string; createdAt: Date }>): XPTransaction[] {
-  return rows.map((row) => ({
-    id: row.id,
-    userId: row.userId,
-    source: row.source as XPTransaction["source"],
-    amount: row.amount,
-    description: row.description,
-    createdAt: row.createdAt.toISOString()
-  }));
-}
-
-function friendshipPairKey(requesterId: string, addresseeId: string) {
-  return [requesterId, addresseeId].sort().join(":");
-}
-
-function preferredPublicContests(contests: Contest[]) {
-  const providerManagedPublic = contests.filter(
-    (contest) => contest.kind === "public" && contest.id.startsWith("provider:")
-  );
-  if (providerManagedPublic.length > 0) {
-    return providerManagedPublic;
-  }
-
-  return contests.filter(
-    (contest) => contest.kind === "public" && !contest.id.startsWith("provider:")
-  );
-}
-
-function preferredQuestions(questions: PredictionQuestion[]) {
-  const providerQuestions = questions.filter((question) => question.id.startsWith("provider:"));
-  return providerQuestions.length > 0
-    ? providerQuestions
-    : questions.filter((question) => !question.id.startsWith("provider:"));
-}
-
-function normalizeQuestionsForDisplay(
-  questions: PredictionQuestion[],
-  matches: Match[],
-  teams: Team[]
-): PredictionQuestion[] {
-  const normalizedTeams = teams.map((team) => normalizeIplTeam(team));
-  const teamMap = new Map(normalizedTeams.map((team) => [team.id, team]));
-  const matchMap = new Map(matches.map((match) => [match.id, match]));
-
-  return questions.map((question) => {
-    const match = matchMap.get(question.matchId);
-    const homeTeam = match ? teamMap.get(match.homeTeamId) : undefined;
-    const awayTeam = match ? teamMap.get(match.awayTeamId) : undefined;
-
-    return {
-      ...question,
-      prompt:
-        question.category === "winner" && homeTeam && awayTeam
-          ? `Who wins ${homeTeam.name} vs ${awayTeam.name}?`
-          : question.prompt,
-      options: question.options.map((option) => {
-        const linkedTeam = teamMap.get(option.value);
-        return linkedTeam ? { ...option, label: linkedTeam.name } : option;
-      })
-    };
-  });
-}
-
-function toLeagueDto(row: {
-  id: string;
-  name: string;
-  description: string | null;
-  visibility: string;
-  createdBy: string;
-  inviteCode: string;
-  bannerStyle: string;
-  maxMembers: number;
-  squadSize: number;
-  members: Array<{ userId: string }>;
-  contests?: Array<{ id: string }>;
-  auctionRooms?: Array<{ id: string }>;
-}): League {
-  return {
-    id: row.id,
-    name: row.name,
-    description: row.description ?? undefined,
-    visibility: row.visibility as League["visibility"],
-    createdBy: row.createdBy,
-    inviteCode: row.inviteCode,
-    memberIds: row.members.map((member) => member.userId),
-    contestIds: (row.contests ?? []).map((contest) => contest.id),
-    bannerStyle: row.bannerStyle,
-    mode: "season",
-    maxMembers: row.maxMembers,
-    squadSize: row.squadSize,
-    auctionRoomId: row.auctionRooms?.[0]?.id
-  };
-}
-
-function toRosterDto(row: {
-  id: string;
-  contestId: string;
-  userId: string;
-  players: Prisma.JsonValue;
-  captainPlayerId: string;
-  viceCaptainPlayerId: string;
-  submittedAt: Date;
-  locked: boolean;
-}): Roster {
-  return {
-    id: row.id,
-    contestId: row.contestId,
-    userId: row.userId,
-    players: asJson<Roster["players"]>(row.players),
-    captainPlayerId: row.captainPlayerId,
-    viceCaptainPlayerId: row.viceCaptainPlayerId,
-    submittedAt: row.submittedAt.toISOString(),
-    locked: row.locked
-  };
-}
-
-function buildLeaderboardEntries(
-  contest: Contest,
-  rosters: Roster[],
-  players: Player[],
-  events: FantasyScoreEvent[],
-  statLines: PlayerMatchStatLine[],
-  previousEntries: LeaderboardEntry[]
-): LeaderboardEntry[] {
-  const previousRanks = new Map(previousEntries.map((entry) => [entry.userId, entry.rank]));
-
-  return rosters
-    .map((roster) => ({
-      roster,
-      score: calculateRosterPoints(roster, players, events, statLines).total
-    }))
-    .sort((left, right) => right.score - left.score)
-    .map(({ roster, score }, index) => {
-      const currentRank = index + 1;
-      const previousRank = previousRanks.get(roster.userId) ?? currentRank;
-
-      return {
-        id: `${contest.id}-${roster.userId}`,
-        contestId: contest.id,
-        userId: roster.userId,
-        points: score,
-        rank: currentRank,
-        previousRank,
-        trend:
-          currentRank < previousRank ? "up" : currentRank > previousRank ? "down" : "steady"
-      };
-    });
-}
 
 type ProviderStateRow = Pick<
   ProviderStateModel,
   "id" | "status" | "syncedAt" | "lastAttemptedAt" | "requestDayKey" | "dailyRequestCount" | "blockedUntil"
 >;
 
-// TODO: Split into AuthRepository, GameRepository, and ProviderRepository (#3)
+/**
+ * Composition repository: delegates auth to PrismaAuthRepository,
+ * keeps game/provider methods inline (#3).
+ *
+ * Consumers should prefer using PrismaAuthRepository directly for auth concerns.
+ * This class exists for backward compatibility during the migration.
+ */
 export class PrismaAppRepository implements AuthRuntimeRepository, GameRuntimeRepository {
-  constructor(private readonly client: PrismaClient = prisma) {}
+  private readonly auth: PrismaAuthRepository;
 
-  async listProfileUsernamesByBase(baseUsername: string): Promise<string[]> {
-    const rows = await this.client.profile.findMany({
-      where: {
-        username: {
-          startsWith: baseUsername,
-          mode: "insensitive"
-        }
-      },
-      select: {
-        username: true
-      }
-    });
-
-    return rows.map((row) => row.username);
+  constructor(private readonly client: PrismaClient = prisma) {
+    this.auth = new PrismaAuthRepository(client);
   }
 
-  async findUserLoginRecord(email: string): Promise<{
-    user: User;
-    profile: Profile;
-    passwordHash: string;
-  } | null> {
-    const row = await this.client.user.findUnique({
-      where: { email },
-      include: {
-        credential: true,
-        profile: true
-      }
-    });
+  // --- Auth delegation (see PrismaAuthRepository for implementations) ---
 
-    if (!row?.credential || !row.profile) {
-      return null;
-    }
-
-    return {
-      user: {
-        id: row.id,
-        email: row.email,
-        name: row.name,
-        isAdmin: row.isAdmin,
-        createdAt: row.createdAt.toISOString()
-      },
-      profile: {
-        userId: row.profile.userId,
-        username: row.profile.username,
-        bio: row.profile.bio ?? undefined,
-        favoriteTeamId: row.profile.favoriteTeamId ?? undefined,
-        xp: row.profile.xp,
-        level: row.profile.level,
-        streak: row.profile.streak,
-        onboardingCompleted: row.profile.onboardingCompleted,
-        equippedCosmetics: asJson<Profile["equippedCosmetics"]>(row.profile.equippedCosmetics)
-      },
-      passwordHash: row.credential.passwordHash
-    };
+  listProfileUsernamesByBase(baseUsername: string) {
+    return this.auth.listProfileUsernamesByBase(baseUsername);
   }
 
-  async createRegisteredUserRecord(payload: {
-    user: User;
-    profile: Profile;
-    passwordHash: string;
-    sessionHash: string;
-    sessionCreatedAt: string;
-    sessionExpiresAt: string;
-  }): Promise<void> {
-    await this.client.$transaction(async (tx) => {
-      await tx.user.create({
-        data: {
-          id: payload.user.id,
-          email: payload.user.email,
-          name: payload.user.name,
-          isAdmin: payload.user.isAdmin,
-          createdAt: new Date(payload.user.createdAt)
-        }
-      });
-
-      await tx.authCredential.create({
-        data: {
-          userId: payload.user.id,
-          passwordHash: payload.passwordHash
-        }
-      });
-
-      await tx.profile.create({
-        data: {
-          userId: payload.profile.userId,
-          username: payload.profile.username,
-          bio: payload.profile.bio ?? null,
-          favoriteTeamId: payload.profile.favoriteTeamId ?? null,
-          xp: payload.profile.xp,
-          level: payload.profile.level,
-          streak: payload.profile.streak,
-          onboardingCompleted: payload.profile.onboardingCompleted,
-          equippedCosmetics: inputJson(payload.profile.equippedCosmetics)
-        }
-      });
-
-      await tx.userInventory.create({
-        data: {
-          userId: payload.user.id,
-          cosmeticIds: [],
-          badgeIds: [],
-          equipped: inputJson({})
-        }
-      });
-
-      await tx.session.create({
-        data: {
-          token: payload.sessionHash,
-          userId: payload.user.id,
-          createdAt: new Date(payload.sessionCreatedAt),
-          expiresAt: new Date(payload.sessionExpiresAt)
-        }
-      });
-    });
+  findUserLoginRecord(email: string) {
+    return this.auth.findUserLoginRecord(email);
   }
 
-  async createHashedSession(payload: {
-    userId: string;
-    sessionHash: string;
-    createdAt: string;
-    expiresAt: string;
-  }): Promise<void> {
-    await this.client.session.create({
-      data: {
-        token: payload.sessionHash,
-        userId: payload.userId,
-        createdAt: new Date(payload.createdAt),
-        expiresAt: new Date(payload.expiresAt)
-      }
-    });
+  createRegisteredUserRecord(payload: Parameters<AuthRuntimeRepository["createRegisteredUserRecord"]>[0]) {
+    return this.auth.createRegisteredUserRecord(payload);
   }
 
-  async hasAnyAdminUser(): Promise<boolean> {
-    const count = await this.client.user.count({
-      where: { isAdmin: true }
-    });
-
-    return count > 0;
+  createHashedSession(payload: Parameters<AuthRuntimeRepository["createHashedSession"]>[0]) {
+    return this.auth.createHashedSession(payload);
   }
 
-  async completeOnboardingProfile(payload: {
-    userId: string;
-    username: string;
-    favoriteTeamId: string;
-  }): Promise<Profile> {
-    // Use a transaction to prevent TOCTOU race on username uniqueness (#4)
-    try {
-      const profile = await this.client.$transaction(async (tx) => {
-        const [team, duplicate] = await Promise.all([
-          tx.team.findUnique({
-            where: { id: payload.favoriteTeamId },
-            select: { id: true }
-          }),
-          tx.profile.findFirst({
-            where: {
-              username: {
-                equals: payload.username,
-                mode: "insensitive"
-              },
-              NOT: {
-                userId: payload.userId
-              }
-            },
-            select: {
-              userId: true
-            }
-          })
-        ]);
-
-        if (!team) {
-          throw new Error("Favorite team not found.");
-        }
-
-        if (duplicate) {
-          throw new Error("Username is already taken.");
-        }
-
-        return tx.profile.update({
-          where: { userId: payload.userId },
-          data: {
-            username: payload.username,
-            favoriteTeamId: payload.favoriteTeamId,
-            onboardingCompleted: true
-          }
-        });
-      });
-
-      return {
-        userId: profile.userId,
-        username: profile.username,
-        bio: profile.bio ?? undefined,
-        favoriteTeamId: profile.favoriteTeamId ?? undefined,
-        xp: profile.xp,
-        level: profile.level,
-        streak: profile.streak,
-        onboardingCompleted: profile.onboardingCompleted,
-        equippedCosmetics: asJson<Profile["equippedCosmetics"]>(profile.equippedCosmetics)
-      };
-    } catch (error) {
-      // Handle Prisma unique constraint violation on username (#4)
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === "P2002"
-      ) {
-        throw new Error("Username is already taken.");
-      }
-      throw error;
-    }
+  hasAnyAdminUser() {
+    return this.auth.hasAnyAdminUser();
   }
 
-  async findActiveSessionUserId(sessionHash: string, now: string): Promise<string | null> {
-    const session = await this.client.session.findUnique({
-      where: { token: sessionHash },
-      select: {
-        userId: true,
-        expiresAt: true
-      }
-    });
-
-    if (!session) {
-      return null;
-    }
-
-    if (session.expiresAt.getTime() <= new Date(now).getTime()) {
-      await this.client.session.delete({
-        where: { token: sessionHash }
-      }).catch(() => undefined);
-      return null;
-    }
-
-    return session.userId;
+  completeOnboardingProfile(payload: Parameters<AuthRuntimeRepository["completeOnboardingProfile"]>[0]) {
+    return this.auth.completeOnboardingProfile(payload);
   }
 
-  async deleteSessionByHash(sessionHash: string): Promise<void> {
-    await this.client.session.deleteMany({
-      where: { token: sessionHash }
-    });
+  findActiveSessionUserId(sessionHash: string, now: string) {
+    return this.auth.findActiveSessionUserId(sessionHash, now);
   }
 
-  async deleteExpiredSessions(now: string): Promise<void> {
-    await this.client.session.deleteMany({
-      where: { expiresAt: { lte: new Date(now) } }
-    });
+  deleteSessionByHash(sessionHash: string) {
+    return this.auth.deleteSessionByHash(sessionHash);
   }
 
-  async isUserAdmin(userId: string): Promise<boolean> {
-    const user = await this.client.user.findUnique({
-      where: { id: userId },
-      select: { isAdmin: true }
-    });
-
-    return user?.isAdmin ?? false;
+  deleteExpiredSessions(now: string) {
+    return this.auth.deleteExpiredSessions(now);
   }
+
+  isUserAdmin(userId: string) {
+    return this.auth.isUserAdmin(userId);
+  }
+
+  // --- Game methods (inline, to be extracted as PrismaGameRepository) ---
 
   async getBootstrapPayload(userId: string): Promise<BootstrapPayload> {
     const [userRow, teamRows] = await Promise.all([

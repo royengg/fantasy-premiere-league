@@ -9,6 +9,7 @@ import type { ApiDependencies } from "./lib/http.js";
 import { createRealtimeHub } from "./lib/socket.js";
 import { PrismaAuctionRepository } from "./repositories/prisma-auction-repository.js";
 import { PrismaAppRepository } from "./repositories/prisma-app-repository.js";
+import { PrismaAuthRepository } from "./repositories/prisma-auth-repository.js";
 import { AdminService } from "./services/admin-service.js";
 import { AuctionRoomScheduler } from "./services/auction-room-scheduler.js";
 import { AuctionService } from "./services/auction-service.js";
@@ -27,10 +28,11 @@ async function createRuntime(): Promise<{
   auctionService: AuctionService;
 }> {
   const prismaRepository = new PrismaAppRepository();
+  const prismaAuthRepository = new PrismaAuthRepository();
   const prismaAuctionRepository = new PrismaAuctionRepository();
   await prismaRepository.initialize(seedStore);
   cricketDataService.configureBudgetStore(prismaRepository);
-  const authService = new AuthService(prismaRepository);
+  const authService = new AuthService(prismaAuthRepository);
   const gameService = new GameService(prismaRepository);
   const auctionService = new AuctionService(prismaAuctionRepository);
   await gameService.initialize();
